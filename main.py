@@ -1,5 +1,5 @@
+import sys
 import tkinter as tk
-import random
 import datetime
 from tkinter import ttk, messagebox, simpledialog, filedialog
 from datetime import datetime
@@ -8,18 +8,45 @@ import sqlite3
 import math
 import time
 import re
+import json
 
 try:
     from openpyxl import Workbook, load_workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
 except ImportError:
     Workbook = None
     load_workbook = None
     Font = PatternFill = Alignment = Border = Side = None
     get_column_letter = None
+    Table = TableStyleInfo = None
 
 from database import get_connection, create_database
+
+
+# =========================================================
+# WINDOWS DPI / DISPLAY SCALING
+# =========================================================
+
+def configure_windows_dpi():
+    """Membuat aplikasi sadar DPI agar aman pada Windows 100%-200% scaling."""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        # Per-Monitor DPI Aware V2 (Windows 10+)
+        try:
+            user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+            return
+        except Exception:
+            pass
+        # Fallback untuk Windows yang lebih lama.
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 # =========================================================
@@ -42,7 +69,30 @@ NAMA_BULAN = [
     "Oktober",
     "November",
     "Desember"
-]
+ ]
+
+
+# =========================================================
+# MODERN UI PALETTE
+# =========================================================
+UI_BG = "#F5F7FA"
+UI_PANEL = "#FFFFFF"
+UI_BORDER = "#E2E8F0"
+UI_TEXT = "#111827"
+UI_MUTED = "#64748B"
+UI_PRIMARY = "#0F766E"
+UI_PRIMARY_HOVER = "#115E59"
+UI_PRIMARY_LIGHT = "#E6F7F4"
+UI_SUCCESS = "#15803D"
+UI_SUCCESS_LIGHT = "#ECFDF3"
+UI_DANGER = "#DC2626"
+UI_DANGER_LIGHT = "#FEF2F2"
+UI_HEADER = "#0F172A"
+UI_HEADER_2 = "#1E293B"
+UI_WHITE = "#FFFFFF"
+UI_TABLE_HEAD = "#F8FAFC"
+UI_TABLE_ALT = "#F8FAFC"
+UI_SHADOW = "#E5E7EB"
 
 
 # =========================================================
@@ -134,6 +184,8 @@ def ensure_bagian_schema():
         cursor.execute("ALTER TABLE bagian ADD COLUMN penanggung_jawab_id INTEGER")
     if "nama_bagian" not in columns:
         cursor.execute("ALTER TABLE bagian ADD COLUMN nama_bagian TEXT")
+    if "komposisi_target" not in columns:
+        cursor.execute("ALTER TABLE bagian ADD COLUMN komposisi_target TEXT DEFAULT ''")
 
     # Hari libur disimpan per periode (bulan/tahun), sehingga setiap bulan
     # dapat memiliki tanggal merah yang berbeda. Hari Minggu tetap nonaktif
@@ -147,8 +199,38 @@ def ensure_bagian_schema():
         )
     """)
 
+    # Desa master dan relasi desa pada jadwal.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS desa (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nama TEXT NOT NULL UNIQUE,
+            aktif INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    jadwal_columns = [row[1] for row in cursor.execute("PRAGMA table_info(jadwal)").fetchall()]
+    if "desa_id" not in jadwal_columns:
+        cursor.execute("ALTER TABLE jadwal ADD COLUMN desa_id INTEGER")
+
     conn.commit()
     conn.close()
+
+
+def load_desa_aktif():
+    conn = get_connection()
+    try:
+        return conn.execute(
+            "SELECT id, nama FROM desa WHERE aktif = 1 ORDER BY nama"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def load_desa_by_id(desa_id):
+    conn = get_connection()
+    try:
+        return conn.execute("SELECT id, nama FROM desa WHERE id = ?", (desa_id,)).fetchone()
+    finally:
+        conn.close()
 
 
 # =========================================================
@@ -601,6 +683,71 @@ def cari_beberapa_kombinasi(pegawai, dana, max_hasil=None):
     return hasil
 
 
+
+def cari_komposisi_turun(tarif_groups, dana, max_hasil=60):
+    """
+    Mencari komposisi TARGET JUMLAH TURUN berdasarkan dana bulanan.
+    Satu 'turun' berarti satu pegawai hadir pada satu tanggal.
+    Tarif dapat dipakai berulang karena pegawai yang sama dapat turun
+    beberapa kali dalam satu bulan.
+    """
+    dana = int(dana or 0)
+    groups = sorted(
+        [(str(g), int(t)) for g, t in tarif_groups if int(t or 0) > 0],
+        key=lambda x: (x[1], x[0])
+    )
+    if dana <= 0 or not groups:
+        return []
+
+    # Skala berdasarkan FPB agar DP tetap ringan.
+    skala = dana
+    for _, tarif in groups:
+        skala = math.gcd(skala, tarif)
+    if skala <= 0:
+        skala = 1
+
+    target_u = dana // skala
+    vals = [(gol, tarif, tarif // skala) for gol, tarif in groups]
+
+    # dp[total] berisi beberapa signature exact.
+    dp = {0: [()]}
+    for total_u in range(1, target_u + 1):
+        combos = []
+        for gol, tarif, unit in vals:
+            if total_u < unit or (total_u - unit) not in dp:
+                continue
+            for prev in dp[total_u - unit]:
+                counts = {(g, t): n for g, t, n in prev}
+                key = (gol, tarif)
+                counts[key] = counts.get(key, 0) + 1
+                sig = tuple(sorted(
+                    (g, t, n) for (g, t), n in counts.items() if n
+                ))
+                if sig not in combos:
+                    combos.append(sig)
+                    if len(combos) >= max_hasil:
+                        break
+            if len(combos) >= max_hasil:
+                break
+        if combos:
+            combos.sort(key=lambda sig: (
+                sum(x[2] for x in sig),
+                len(sig),
+                tuple((x[0], x[1], x[2]) for x in sig)
+            ))
+            dp[total_u] = combos
+
+    hasil = []
+    for nomor, sig in enumerate(dp.get(target_u, [])[:max_hasil], start=1):
+        hasil.append({
+            "nomor": nomor,
+            "signature": sig,
+            "jumlah_turun": sum(x[2] for x in sig),
+            "total": sum(x[1] * x[2] for x in sig),
+        })
+    return hasil
+
+
 def cari_saran_dana_terdekat(pegawai, target):
     """Mencari jumlah tarif yang paling dekat dengan target, di bawah dan di atas."""
     target = int(target or 0)
@@ -659,20 +806,20 @@ class App(tk.Tk):
     def __init__(self):
 
         super().__init__()
+        self.configure(bg=UI_BG)
 
         self.title(
             "Sistem Penugasan Pegawai"
         )
+        self.modernize_window(self, "Sistem Penugasan Pegawai", (650, 420))
 
-        self.geometry(
-            "1400x900"
-        )
-
-        self.minsize(
-            1200,
-            700
-        )
+        # Ukuran awal fleksibel; Windows akan menyesuaikan dengan DPI monitor.
+        self.geometry("1200x760")
+        self.minsize(650, 420)
         self.state("zoomed")
+        self._fullscreen = False
+        self.bind("<F11>", self.toggle_fullscreen)
+        self.bind("<Escape>", self.exit_fullscreen)
 
         create_database()
         ensure_bagian_schema()
@@ -693,6 +840,8 @@ class App(tk.Tk):
         self.bagian_aktif = kode_awal[0] if kode_awal else "A"
 
         self.selected_ids = set()
+        self.komposisi_target = {}
+        self.komposisi_target_tarif = {}
 
         self.bagian_id = None
 
@@ -703,85 +852,560 @@ class App(tk.Tk):
         self.load_bagian_data()
         self.load_kalender()
 
+    def toggle_fullscreen(self, event=None):
+        self._fullscreen = not getattr(self, "_fullscreen", False)
+        self.attributes("-fullscreen", self._fullscreen)
+        return "break"
+
+    def exit_fullscreen(self, event=None):
+        if getattr(self, "_fullscreen", False):
+            self._fullscreen = False
+            self.attributes("-fullscreen", False)
+        return "break"
+
+    # =====================================================
+    # MODERN UI HELPERS
+    # =====================================================
+
+    def center_window(self, win, parent=None):
+        """Pusatkan window secara aman terhadap parent, termasuk pada DPI/scaling tinggi."""
+        try:
+            if parent is None:
+                parent = self
+            win.update_idletasks()
+
+            # Ukuran aktual harus sekurang-kurangnya sebesar kebutuhan widget.
+            ww = max(int(win.winfo_width()), int(win.winfo_reqwidth()), 1)
+            wh = max(int(win.winfo_height()), int(win.winfo_reqheight()), 1)
+
+            sw = int(win.winfo_screenwidth())
+            sh = int(win.winfo_screenheight())
+
+            if parent is not None and parent.winfo_exists():
+                parent.update_idletasks()
+                px = int(parent.winfo_rootx())
+                py = int(parent.winfo_rooty())
+                pw = max(int(parent.winfo_width()), int(parent.winfo_reqwidth()), 1)
+                ph = max(int(parent.winfo_height()), int(parent.winfo_reqheight()), 1)
+
+                x = px + (pw - ww) // 2
+                y = py + (ph - wh) // 2
+            else:
+                x = (sw - ww) // 2
+                y = (sh - wh) // 2
+
+            # Jangan biarkan dialog keluar layar.
+            x = max(8, min(x, max(8, sw - ww - 8)))
+            y = max(8, min(y, max(8, sh - wh - 8)))
+
+            win.geometry(f"{ww}x{wh}+{x}+{y}")
+            win.lift()
+        except Exception:
+            pass
+
+    def fit_popup(self, win, parent=None, min_width=520, min_height=320,
+                  max_width=1000, max_height=760):
+        """Sesuaikan dialog dengan isi agar tidak terpotong pada DPI/scaling tinggi."""
+        try:
+            if parent is None:
+                parent = self
+            win.update_idletasks()
+
+            req_w = max(int(win.winfo_reqwidth()), int(min_width))
+            req_h = max(int(win.winfo_reqheight()), int(min_height))
+
+            sw = int(win.winfo_screenwidth())
+            sh = int(win.winfo_screenheight())
+
+            # Sisakan ruang untuk taskbar/title bar.
+            max_w = min(int(max_width), max(420, sw - 32))
+            max_h = min(int(max_height), max(300, sh - 80))
+
+            width = min(req_w, max_w)
+            height = min(req_h, max_h)
+
+            # Kalau isi lebih tinggi daripada layar, biarkan dialog resize
+            # sampai batas layar; konten yang panjang tetap dapat memakai scroll
+            # jika caller menyediakannya.
+            win.geometry(f"{width}x{height}")
+            win.update_idletasks()
+            self.center_window(win, parent)
+
+            # Center sekali lagi setelah Windows menyelesaikan geometry/DPI.
+            for delay in (40, 120, 240):
+                try:
+                    win.after(delay, lambda w=win, p=parent: self.center_window(w, p))
+                except Exception:
+                    pass
+        except Exception:
+            self.center_window(win, parent)
+
+    def enable_native_window_controls(self, win, maximize=True, minimize=True):
+        """Pastikan Toplevel Windows memiliki tombol minimize/maximize native.
+
+        Tk/Windows kadang menyembunyikan tombol tersebut pada Toplevel yang
+        dibuat sebagai transient/dialog. Kita aktifkan kembali style native
+        Windows agar user dapat mengecilkan, membesarkan, atau maximize window
+        tanpa harus menyeret sudut window secara manual.
+        """
+        try:
+            win.resizable(True, True)
+        except Exception:
+            pass
+
+        if sys.platform != "win32":
+            return
+
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            hwnd = wintypes.HWND(win.winfo_id())
+            user32 = ctypes.windll.user32
+            GWL_STYLE = -16
+            WS_MINIMIZEBOX = 0x00020000
+            WS_MAXIMIZEBOX = 0x00010000
+            WS_THICKFRAME = 0x00040000
+            WS_SYSMENU = 0x00080000
+            SWP_NOSIZE = 0x0001
+            SWP_NOMOVE = 0x0002
+            SWP_NOZORDER = 0x0004
+            SWP_FRAMECHANGED = 0x0020
+
+            get_style = user32.GetWindowLongW
+            set_style = user32.SetWindowLongW
+            get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+            get_style.restype = ctypes.c_long
+            set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+            set_style.restype = ctypes.c_long
+
+            # Toplevel yang memakai transient() sering diberi WS_EX_TOOLWINDOW oleh
+            # Tk/Windows. Style tersebut membuat title bar hanya menampilkan tombol
+            # Close. Untuk aplikasi ini kita ingin window biasa: Minimize +
+            # Maximize/Restore + Close tetap tersedia, termasuk pada DPI 175%.
+            GWL_EXSTYLE = -20
+            WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_APPWINDOW = 0x00040000
+
+            get_exstyle = user32.GetWindowLongW
+            set_exstyle = user32.SetWindowLongW
+            get_exstyle.argtypes = [wintypes.HWND, ctypes.c_int]
+            get_exstyle.restype = ctypes.c_long
+            set_exstyle.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+            set_exstyle.restype = ctypes.c_long
+
+            style = get_style(hwnd, GWL_STYLE)
+            style |= WS_SYSMENU | WS_THICKFRAME
+            if maximize:
+                style |= WS_MAXIMIZEBOX
+            else:
+                style &= ~WS_MAXIMIZEBOX
+            if minimize:
+                style |= WS_MINIMIZEBOX
+            else:
+                style &= ~WS_MINIMIZEBOX
+
+            exstyle = get_exstyle(hwnd, GWL_EXSTYLE)
+            exstyle &= ~WS_EX_TOOLWINDOW
+            exstyle |= WS_EX_APPWINDOW
+
+            set_style(hwnd, GWL_STYLE, style)
+            set_exstyle(hwnd, GWL_EXSTYLE, exstyle)
+            user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+            )
+            # Paksa Windows menggambar ulang title bar setelah style berubah.
+            try:
+                user32.DrawMenuBar(hwnd)
+            except Exception:
+                pass
+        except Exception:
+            # Native controls are an enhancement; the application must still
+            # work normally if Windows API access is unavailable.
+            pass
+
+    def toggle_window_maximize(self, win):
+        """Toggle maximize/restore for a Toplevel."""
+        try:
+            if win.state() == "zoomed":
+                win.state("normal")
+            else:
+                win.state("zoomed")
+        except Exception:
+            pass
+
+    def modernize_window(self, win, title=None, minsize=(760, 480), parent=None):
+        """Gaya dasar jendela modern dan pusatkan pada parent yang benar.
+
+        Jika caller sudah memanggil ``transient(parent)``, parent tersebut dipakai
+        otomatis. Ini mencegah popup yang dibuka dari Kalender/kelas data melompat
+        kembali ke jendela utama.
+        """
+        try:
+            win.configure(bg=UI_BG)
+        except Exception:
+            pass
+        try:
+            win.minsize(*minsize)
+        except Exception:
+            pass
+        try:
+            if title:
+                win.title(title)
+        except Exception:
+            pass
+        try:
+            win.option_add("*Font", ("Segoe UI", 10))
+        except Exception:
+            pass
+
+        def resolve_parent():
+            if parent is not None:
+                return parent
+            try:
+                transient_name = win.transient()
+                if transient_name:
+                    return win.nametowidget(transient_name)
+            except Exception:
+                pass
+            return self
+
+        def recenter(w=win):
+            try:
+                if w.winfo_exists():
+                    self.center_window(w, resolve_parent())
+            except Exception:
+                pass
+
+        try:
+            win.after_idle(lambda: self.enable_native_window_controls(win))
+            win.after(40, lambda: self.enable_native_window_controls(win))
+            win.after(120, lambda: self.enable_native_window_controls(win))
+            win.after(250, lambda: self.enable_native_window_controls(win))
+            win.after(500, lambda: self.enable_native_window_controls(win))
+            win.after(80, recenter)
+            win.after(160, recenter)
+            win.after(320, recenter)
+        except Exception:
+            pass
+
+    def modernize_tree(self, tree, striped=True):
+        """Penyempurnaan kecil Treeview: zebra, hover, selection, dan scroll-wheel."""
+        try:
+            if striped:
+                tree.tag_configure("row_even", background=UI_PANEL)
+                tree.tag_configure("row_odd", background=UI_TABLE_ALT)
+            tree.tag_configure("selected_row", background=UI_PRIMARY_LIGHT)
+            tree.bind("<Motion>", self._tree_hover, add="+")
+            tree.bind("<MouseWheel>", lambda e, t=tree: t.yview_scroll(int(-e.delta / 120), "units"), add="+")
+            tree.bind("<Shift-MouseWheel>", lambda e, t=tree: t.xview_scroll(int(-e.delta / 120), "units"), add="+")
+        except Exception:
+            pass
+
+    def _tree_hover(self, event):
+        try:
+            tree = event.widget
+            row = tree.identify_row(event.y)
+            old = getattr(self, "_hover_tree_item", None)
+            old_tree = getattr(self, "_hover_tree", None)
+            if old and old_tree is tree and tree.exists(old):
+                tree.item(old, tags=tuple(t for t in tree.item(old, "tags") if t not in ("hover_row",)))
+            if row:
+                tags = tuple(t for t in tree.item(row, "tags") if t not in ("hover_row",))
+                tree.item(row, tags=tags + ("hover_row",))
+                tree.tag_configure("hover_row", background="#F0FDFA")
+                self._hover_tree_item = row
+                self._hover_tree = tree
+            else:
+                self._hover_tree_item = None
+                self._hover_tree = None
+        except Exception:
+            pass
+
     # =====================================================
     # STYLE
     # =====================================================
 
     def build_style(self):
-
-        style = ttk.Style()
+        style = ttk.Style(self)
 
         try:
             style.theme_use("clam")
-        except:
+        except Exception:
             pass
 
-        style.configure(
-            "Treeview",
-            rowheight=40,
-            font=("Segoe UI", 11), 
-            borderwidth=1,
-            relief="solid"
-        )
+        # Base typography / colors
+        style.configure(".", font=("Segoe UI", 10), foreground=UI_TEXT)
+        style.configure("TFrame", background=UI_BG)
+        style.configure("TLabel", background=UI_BG, foreground=UI_TEXT, font=("Segoe UI", 10))
 
-        style.configure(
-            "Treeview.Heading",
-            font=("Segoe UI", 11, "bold"),
-            borderwidth=1,
-            relief="solid"
-        )
-
+        # Modern buttons
         style.configure(
             "TButton",
-            font=("Segoe UI", 9)
+            font=("Segoe UI", 10, "bold"),
+            padding=(16, 9),
+            foreground=UI_TEXT,
+            background=UI_PANEL,
+            bordercolor=UI_BORDER,
+            lightcolor=UI_PANEL,
+            darkcolor=UI_BORDER,
+            relief="flat"
+        )
+        style.map(
+            "TButton",
+            background=[("pressed", "#E8EEF6"), ("active", "#F1F5F9")],
+            foreground=[("disabled", "#98A2B3"), ("!disabled", UI_TEXT)]
         )
 
+        style.configure(
+            "Primary.TButton",
+            foreground=UI_WHITE,
+            background=UI_PRIMARY,
+            bordercolor=UI_PRIMARY,
+            padding=(16, 9)
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("pressed", UI_PRIMARY_HOVER), ("active", UI_PRIMARY_HOVER)]
+        )
+
+        style.configure(
+            "Danger.TButton",
+            foreground=UI_DANGER,
+            background=UI_DANGER_LIGHT,
+            bordercolor="#F4C7C7",
+            padding=(12, 8)
+        )
+        style.map(
+            "Danger.TButton",
+            background=[("active", "#FBDADA"), ("pressed", "#F8CACA")]
+        )
+
+        # Inputs
+        style.configure(
+            "TEntry",
+            padding=(10, 7),
+            fieldbackground=UI_PANEL,
+            foreground=UI_TEXT,
+            bordercolor=UI_BORDER,
+            lightcolor=UI_PRIMARY,
+            darkcolor=UI_BORDER
+        )
+        style.configure(
+            "TCombobox",
+            padding=(8, 6),
+            fieldbackground=UI_PANEL,
+            foreground=UI_TEXT,
+            bordercolor=UI_BORDER,
+            arrowcolor=UI_MUTED
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", UI_PANEL)],
+            selectbackground=[("readonly", UI_PRIMARY_LIGHT)],
+            selectforeground=[("readonly", UI_TEXT)]
+        )
+
+        style.configure(
+            "TCheckbutton",
+            background=UI_BG,
+            foreground=UI_TEXT,
+            font=("Segoe UI", 10),
+            padding=(4, 4)
+        )
+
+        # Notebook: cleaner tabs
+        style.configure(
+            "TNotebook",
+            background=UI_BG,
+            borderwidth=0,
+            tabmargins=(0, 0, 0, 0)
+        )
+        style.configure(
+            "TNotebook.Tab",
+            background="#F1F3F5",
+            foreground=UI_MUTED,
+            padding=(20, 10),
+            font=("Segoe UI", 10, "bold"),
+            borderwidth=0
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", UI_PANEL), ("active", "#F3F6FA")],
+            foreground=[("selected", UI_PRIMARY), ("active", UI_TEXT)]
+        )
+
+        # Menubutton
+        style.configure(
+            "TMenubutton",
+            font=("Segoe UI", 10, "bold"),
+            padding=(13, 8),
+            foreground=UI_TEXT,
+            background=UI_PANEL,
+            bordercolor=UI_BORDER
+        )
+
+        style.configure(
+            "Soft.TButton",
+            foreground=UI_PRIMARY,
+            background=UI_PRIMARY_LIGHT,
+            bordercolor="#CFE0FF",
+            padding=(13, 8)
+        )
+        style.map(
+            "Soft.TButton",
+            background=[("active", "#DCEAFF"), ("pressed", "#D2E3FF")]
+        )
+
+        # Treeview
+        style.configure(
+            "Treeview",
+            rowheight=34,
+            font=("Segoe UI", 10),
+            background=UI_PANEL,
+            fieldbackground=UI_PANEL,
+            foreground=UI_TEXT,
+            borderwidth=0,
+            relief="flat"
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", UI_PRIMARY_LIGHT)],
+            foreground=[("selected", UI_TEXT)]
+        )
+        style.configure(
+            "Treeview.Heading",
+            font=("Segoe UI", 10, "bold"),
+            background=UI_TABLE_HEAD,
+            foreground="#344054",
+            padding=(10, 8),
+            borderwidth=0,
+            relief="flat"
+        )
+        style.map(
+            "Treeview.Heading",
+            background=[("active", "#E5ECF5")]
+        )
+
+        # Scrollbars
+        style.configure(
+            "Vertical.TScrollbar",
+            background="#CBD5E1",
+            troughcolor=UI_BG,
+            bordercolor=UI_BG,
+            arrowcolor=UI_MUTED,
+            width=11
+        )
+        style.configure(
+            "Horizontal.TScrollbar",
+            background="#CBD5E1",
+            troughcolor=UI_BG,
+            bordercolor=UI_BG,
+            arrowcolor=UI_MUTED,
+            width=10
+        )
+
+        # Modern utility styles used consistently by dialogs and secondary actions.
+        style.configure(
+            "Card.TFrame",
+            background=UI_PANEL,
+            borderwidth=0
+        )
+        style.configure(
+            "Section.TLabel",
+            background=UI_PANEL,
+            foreground=UI_TEXT,
+            font=("Segoe UI Semibold", 11)
+        )
+        style.configure(
+            "Muted.TLabel",
+            background=UI_PANEL,
+            foreground=UI_MUTED,
+            font=("Segoe UI", 9)
+        )
+        style.configure(
+            "Accent.TButton",
+            foreground=UI_WHITE,
+            background=UI_PRIMARY,
+            borderwidth=0,
+            padding=(15, 9),
+            font=("Segoe UI Semibold", 10)
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", UI_PRIMARY_HOVER), ("pressed", UI_PRIMARY_HOVER), ("disabled", "#CBD5E1")],
+            foreground=[("disabled", "#FFFFFF"), ("!disabled", UI_WHITE)]
+        )
+        style.configure(
+            "Ghost.TButton",
+            foreground=UI_TEXT,
+            background=UI_PANEL,
+            borderwidth=1,
+            padding=(12, 8),
+            font=("Segoe UI Semibold", 10)
+        )
+        style.map(
+            "Ghost.TButton",
+            background=[("active", "#F3F4F6"), ("pressed", "#E5E7EB")],
+            bordercolor=[("active", "#D1D5DB")]
+        )
     # =====================================================
     # HEADER
     # =====================================================
 
     def build_header(self):
+        header = tk.Frame(self, bg=UI_HEADER, height=68)
+        header.pack(fill="x")
+        header.pack_propagate(False)
 
-        header = tk.Frame(
-            self,
-            bg="#17324D",
-            height=85
-        )
-
-        header.pack(
-            fill="x"
-        )
+        left = tk.Frame(header, bg=UI_HEADER)
+        left.pack(side="left", fill="y", padx=24)
 
         tk.Label(
-            header,
-            text="SISTEM PENUGASAN PEGAWAI",
-            bg="#17324D",
-            fg="white",
-            font=("Segoe UI", 21, "bold")
-        ).pack(
-            pady=(13, 0)
-        )
+            left,
+            text="Sistem Penugasan Pegawai",
+            bg=UI_HEADER,
+            fg=UI_WHITE,
+            font=("Segoe UI Semibold", 17)
+        ).pack(anchor="w", pady=(9, 0))
 
         self.header_period = tk.Label(
-            header,
+            left,
             text="",
-            bg="#17324D",
-            fg="#D9E6F2",
-            font=("Segoe UI", 10)
+            bg=UI_HEADER,
+            fg="#D1D5DB",
+            font=("Segoe UI", 9)
         )
-
-        self.header_period.pack()
+        self.header_period.pack(anchor="w", pady=(1, 0))
 
     # =====================================================
     # MAIN
     # =====================================================
+
+    def _force_canvas_scrollregion(self, canvas):
+        """Pastikan area scroll mengikuti seluruh isi, bukan hanya viewport."""
+        try:
+            canvas.update_idletasks()
+            bbox = canvas.bbox("all")
+            if not bbox:
+                return
+            x1, y1, x2, y2 = bbox
+            # Sedikit ruang agar scrollbar tetap nyaman digunakan.
+            canvas.configure(scrollregion=(x1, y1, max(x2, canvas.winfo_width()), max(y2, canvas.winfo_height())))
+        except (tk.TclError, AttributeError):
+            pass
 
     def build_main(self):
 
         # PERIODE
         periode_frame = tk.Frame(
             self,
-            bg="#F4F6F8"
+            bg=UI_PANEL,
+            highlightbackground=UI_BORDER,
+            highlightthickness=1,
+            padx=10,
+            pady=7
         )
 
         periode_frame.pack(
@@ -793,7 +1417,7 @@ class App(tk.Tk):
         tk.Label(
             periode_frame,
             text="Periode:",
-            bg="#F4F6F8",
+            bg=UI_BG,
             font=("Segoe UI", 10, "bold")
         ).pack(
             side="left"
@@ -837,6 +1461,7 @@ class App(tk.Tk):
         ttk.Button(
             periode_frame,
             text="Gunakan Periode",
+            style="Primary.TButton",
             command=self.change_period
         ).pack(
             side="left",
@@ -854,10 +1479,14 @@ class App(tk.Tk):
             command=self.buka_data_pegawai
         )
         self.data_keseluruhan_menu.add_command(
+            label="🏘 Data Desa",
+            command=self.buka_data_desa
+        )
+        self.data_keseluruhan_menu.add_separator()
+        self.data_keseluruhan_menu.add_command(
             label="📅 Kalender Keseluruhan",
             command=self.buka_kalender_keseluruhan
         )
-        self.data_keseluruhan_menu.add_separator()
         self.data_keseluruhan_menu.add_command(
             label="🧹 Kelola / Bersihkan Data",
             command=self.buka_kelola_data
@@ -872,32 +1501,85 @@ class App(tk.Tk):
         ttk.Button(
             periode_frame,
             text="📤 Export Excel",
+            style="Primary.TButton",
             command=self.export_penugasan_excel
         ).pack(side="left", padx=4)
 
         ttk.Button(
             periode_frame,
             text="↻ Refresh Semua",
+            style="Soft.TButton",
             command=self.refresh_all
         ).pack(side="left", padx=4)
 
-        # DAFTAR KEGIATAN DINAMIS
+        # DAFTAR KEGIATAN DINAMIS dengan scrollbar horizontal yang selalu terlihat.
         self.bagian_frame = tk.Frame(
-            self,
-            bg="#F4F6F8"
+            self, bg=UI_PANEL, highlightbackground=UI_BORDER,
+            highlightthickness=1, padx=8, pady=5
         )
-        self.bagian_frame.pack(
-            fill="x",
-            padx=15,
-            pady=5
-        )
+        self.bagian_frame.pack(fill="x", padx=15, pady=5)
 
         tk.Label(
-            self.bagian_frame,
-            text="Kegiatan:",
-            bg="#F4F6F8",
+            self.bagian_frame, text="Kegiatan:", bg=UI_BG,
             font=("Segoe UI", 10, "bold")
-        ).pack(side="left")
+        ).pack(side="left", padx=(2, 8))
+
+        strip_holder = tk.Frame(self.bagian_frame, bg=UI_PANEL)
+        strip_holder.pack(side="left", fill="both", expand=True)
+
+        self.bagian_strip_canvas = tk.Canvas(
+            strip_holder, bg=UI_PANEL, highlightthickness=0, height=38
+        )
+        self.bagian_strip_canvas.pack(fill="x", expand=True)
+
+        self.bagian_strip_hscroll = tk.Scrollbar(
+            strip_holder, orient="horizontal",
+            command=self.bagian_strip_canvas.xview,
+            width=12, bg="#CBD5E1", troughcolor="#F1F5F9",
+            activebackground="#94A3B8", relief="flat", bd=0
+        )
+        self.bagian_strip_hscroll.pack(fill="x", pady=(2, 0))
+        self.bagian_strip_canvas.configure(xscrollcommand=self.bagian_strip_hscroll.set)
+
+        self.bagian_strip_inner = tk.Frame(self.bagian_strip_canvas, bg=UI_PANEL)
+        self.bagian_strip_window = self.bagian_strip_canvas.create_window(
+            (0, 0), window=self.bagian_strip_inner, anchor="nw"
+        )
+        self.bagian_strip_inner.bind(
+            "<Configure>",
+            lambda e: self.bagian_strip_canvas.configure(
+                scrollregion=self.bagian_strip_canvas.bbox("all")
+            )
+        )
+        self.bagian_strip_canvas.bind(
+            "<Configure>",
+            lambda e: self.bagian_strip_canvas.itemconfigure(
+                self.bagian_strip_window, height=max(36, e.height)
+            )
+        )
+        self.bagian_strip_canvas.bind(
+            "<Shift-MouseWheel>",
+            lambda e: self.bagian_strip_canvas.xview_scroll(int(-e.delta / 120), "units"),
+            add="+"
+        )
+        self.bagian_strip_canvas.bind(
+            "<MouseWheel>",
+            lambda e: self.bagian_strip_canvas.xview_scroll(int(-e.delta / 120), "units"),
+            add="+"
+        )
+        self.bagian_strip_canvas.bind("<Button-4>", lambda e: self.bagian_strip_canvas.xview_scroll(-2, "units"), add="+")
+        self.bagian_strip_canvas.bind("<Button-5>", lambda e: self.bagian_strip_canvas.xview_scroll(2, "units"), add="+")
+
+        # Tombol tambah kegiatan selalu tetap terlihat di luar strip yang bisa
+        # digeser. Jadi walaupun kegiatan sudah A-Z, tombol ini tidak pernah
+        # ikut terpotong/tersembunyi di ujung kanan.
+        self.btn_tambah_kegiatan = ttk.Button(
+            self.bagian_frame,
+            text="＋ Tambah Kegiatan",
+            command=self.tambah_bagian,
+            style="Soft.TButton"
+        )
+        self.btn_tambah_kegiatan.pack(side="right", padx=(8, 2))
 
         self.bagian_buttons = {}
         self.refresh_bagian_buttons()
@@ -910,28 +1592,28 @@ class App(tk.Tk):
         self.notebook.pack(
             fill="both",
             expand=True,
-            padx=15,
-            pady=10
+            padx=16,
+            pady=(6, 14)
         )
 
         self.tab_pengaturan = tk.Frame(
             self.notebook,
-            bg="#F4F6F8"
+            bg=UI_BG
         )
 
         self.tab_jadwal = tk.Frame(
             self.notebook,
-            bg="#F4F6F8"
+            bg=UI_BG
         )
 
         self.tab_data_kegiatan = tk.Frame(
             self.notebook,
-            bg="#F4F6F8"
+            bg=UI_BG
         )
 
         self.tab_pegawai = tk.Frame(
             self.notebook,
-            bg="#F4F6F8"
+            bg=UI_BG
         )
 
         self.notebook.add(
@@ -962,21 +1644,36 @@ class App(tk.Tk):
         )
 
     def on_notebook_tab_changed(self, event=None):
-        """Refresh tampilan tab aktif yang datanya berasal dari database."""
+        """Refresh tab aktif dengan indikator loading agar perpindahan tab terasa responsif."""
+        if getattr(self, "_refresh_in_progress", False) or getattr(self, "_schedule_refresh_in_progress", False):
+            return
         try:
             current = self.notebook.select()
             if current == str(self.tab_data_kegiatan):
-                self.refresh_data_kegiatan()
+                action, label = self.refresh_data_kegiatan, "Memuat Data Kegiatan..."
             elif current == str(self.tab_jadwal):
-                self.load_kalender()
+                action, label = self.load_kalender, "Memuat Kalender Kegiatan..."
             elif current == str(self.tab_pengaturan):
-                self.refresh_selection_table()
+                action, label = self.refresh_selection_table, "Memuat Data Pegawai..."
+            else:
+                return
+            self.show_loading(label)
+            self.after(80, lambda: self._finish_tab_loading(action))
         except (tk.TclError, AttributeError):
             pass
 
+    def _finish_tab_loading(self, action):
+        try:
+            action()
+        except Exception as exc:
+            messagebox.showerror("Gagal Memuat", "Halaman tidak dapat dimuat. Silakan coba lagi.", parent=self)
+        finally:
+            self.hide_loading()
+
     def refresh_bagian_buttons(self):
-        """Membangun tombol kegiatan dan tombol X hapus untuk tiap kegiatan."""
-        for widget in self.bagian_frame.winfo_children()[1:]:
+        """Membangun strip kegiatan yang dapat digeser kiri-kanan sampai A-Z."""
+        inner = getattr(self, "bagian_strip_inner", self.bagian_frame)
+        for widget in inner.winfo_children():
             widget.destroy()
         self.bagian_buttons = {}
 
@@ -988,7 +1685,7 @@ class App(tk.Tk):
         conn.close()
 
         for kode, nama_bagian in rows:
-            wrap = tk.Frame(self.bagian_frame, bg="#F4F6F8")
+            wrap = tk.Frame(inner, bg=UI_PANEL)
             wrap.pack(side="left", padx=3)
 
             judul = (nama_bagian or "").strip() or f"Kegiatan {kode}"
@@ -1018,20 +1715,23 @@ class App(tk.Tk):
 
             self.bagian_buttons[kode] = btn
 
-        ttk.Button(
-            self.bagian_frame,
-            text="＋ Tambah Kegiatan",
-            command=self.tambah_bagian
-        ).pack(side="left", padx=(10, 4))
+        # Tombol Tambah Kegiatan berada di luar strip agar selalu terlihat.
+        try:
+            self.bagian_strip_inner.update_idletasks()
+            self.bagian_strip_canvas.configure(scrollregion=self.bagian_strip_canvas.bbox("all"))
+            if hasattr(self, "btn_tambah_kegiatan") and self.btn_tambah_kegiatan.winfo_exists():
+                self.btn_tambah_kegiatan.lift()
+        except Exception:
+            pass
 
         self.update_bagian_button_state()
 
     def update_bagian_button_state(self):
         for kode, btn in self.bagian_buttons.items():
             if kode == self.bagian_aktif:
-                btn.config(bg="#17324D", fg="white")
+                btn.config(bg=UI_HEADER, fg="white")
             else:
-                btn.config(bg="#E0E6EC", fg="black")
+                btn.config(bg="#F3F4F6", fg="black")
 
     def rename_bagian(self, kode):
         """Rename kegiatan dengan double-click pada nama tombol kegiatan."""
@@ -1077,7 +1777,7 @@ class App(tk.Tk):
         except Exception as e:
             if conn:
                 conn.rollback()
-            messagebox.showerror("Gagal Mengganti Nama", str(e))
+            messagebox.showerror("Gagal Mengganti Nama", "Nama kegiatan tidak dapat diubah. Silakan coba lagi.")
             return
         finally:
             if conn:
@@ -1127,92 +1827,397 @@ class App(tk.Tk):
                     "Database sedang terkunci. Tutup program/Excel lain yang sedang membuka database, lalu coba lagi."
                 )
             else:
-                messagebox.showerror("Gagal", f"Kegiatan baru gagal ditambahkan.\n\n{e}")
+                messagebox.showerror("Gagal", "Kegiatan baru gagal ditambahkan. Silakan coba lagi.")
             return
         finally:
             if conn:
                 conn.close()
 
         self.bagian_aktif = kode_baru
-        self.refresh_bagian_buttons()
-        self.load_bagian_data()
-        self.load_kalender()
 
-        self.notebook.select(self.tab_pengaturan)
-        messagebox.showinfo(
-            "Kegiatan Ditambahkan",
-            f"Kegiatan {kode_baru} berhasil ditambahkan. Silakan isi nama dan data kegiatannya."
+        # Setelah kegiatan berhasil dibuat, tampilkan indikator loading selama
+        # seluruh tampilan A-Z, pengaturan, kalender, dan data kegiatan disusun
+        # ulang. Ini sengaja dibuat asynchronous supaya spinner sempat terlihat.
+        self.show_loading(
+            f"Menyiapkan Kegiatan {kode_baru}...",
+            parent=self
         )
+        try:
+            self.update_idletasks()
+            self.update()
+        except Exception:
+            pass
+
+        def selesai_tambah_kegiatan():
+            try:
+                if getattr(self, "_loading_label", None) is not None:
+                    self._loading_label.config(text="Memperbarui daftar kegiatan...")
+                self.refresh_bagian_buttons()
+                self.load_bagian_data()
+                self.load_kalender()
+                self.refresh_data_kegiatan()
+                if (
+                    getattr(self, "overall_calendar_window", None) is not None
+                    and self.overall_calendar_window.winfo_exists()
+                ):
+                    self._show_overall_loading_overlay(
+                        self.overall_calendar_window,
+                        "Memperbarui kegiatan..."
+                    )
+                    try:
+                        self.overall_calendar_window.update_idletasks()
+                        self.overall_calendar_window.update()
+                    except Exception:
+                        pass
+                    self.load_kalender_keseluruhan()
+                    self._hide_overall_loading_overlay()
+
+                self.notebook.select(self.tab_pengaturan)
+            except Exception:
+                self.hide_loading()
+                messagebox.showerror(
+                    "Gagal Memuat",
+                    "Kegiatan berhasil dibuat, tetapi tampilan belum dapat diperbarui. Silakan tekan Refresh Semua.",
+                    parent=self
+                )
+                return
+            finally:
+                if getattr(self, "_loading_win", None) is not None:
+                    self.hide_loading()
+
+            messagebox.showinfo(
+                "Kegiatan Ditambahkan",
+                f"Kegiatan {kode_baru} berhasil ditambahkan. Silakan isi nama dan data kegiatannya.",
+                parent=self
+            )
+
+        self.after(140, selesai_tambah_kegiatan)
 
     # =====================================================
     # Refresh ALL
     # =====================================================
-    def refresh_all(self):
+    def show_loading(self, text="Sedang memuat data...", parent=None):
+        """Menampilkan indikator loading saat proses UI/database berlangsung."""
+        try:
+            if hasattr(self, "_loading_win") and self._loading_win is not None:
+                self._loading_win.destroy()
+        except Exception:
+            pass
 
         try:
+            owner = parent if parent is not None else self
+            win = tk.Toplevel(owner)
+            self._loading_win = win
+            win.title("Memuat")
+            win.transient(owner)
+            self.enable_native_window_controls(win)
+            win.resizable(False, False)
+            win.protocol("WM_DELETE_WINDOW", lambda: None)
 
-            # Reload pegawai dari database
-            self.pegawai = load_pegawai()
+            frame = tk.Frame(win, bg="white", padx=28, pady=22,
+                             highlightthickness=1, highlightbackground="#CCCCCC")
+            frame.pack(fill="both", expand=True)
 
-            # Pastikan periode tetap sesuai pilihan saat ini
-            bulan = NAMA_BULAN.index(
-                self.bulan_var.get()
+            tk.Label(
+                frame, text="Mohon tunggu", bg="white",
+                font=("Segoe UI", 12, "bold")
+            ).pack(pady=(0, 7))
+
+            self._loading_label = tk.Label(
+                frame, text=text, bg="white", fg=UI_MUTED,
+                font=("Segoe UI", 9)
             )
+            self._loading_label.pack(pady=(0, 8))
 
-            tahun = int(
-                self.tahun_var.get()
+            # Spinner teks tetap bergerak dan terlihat jelas walaupun proses
+            # hanya membutuhkan beberapa saat. Progressbar tetap dipakai
+            # sebagai indikator tambahan.
+            self._loading_spinner_index = 0
+            self._loading_spinner = tk.Label(
+                frame, text="◐", bg="white", fg="#0F766E",
+                font=("Segoe UI Symbol", 24, "bold")
             )
+            self._loading_spinner.pack(pady=(0, 8))
 
-            self.bulan = bulan
-            self.tahun = tahun
-
-            self.periode_id = get_or_create_periode(
-                bulan,
-                tahun
+            self._loading_bar = ttk.Progressbar(
+                frame, mode="indeterminate", length=250
             )
+            self._loading_bar.pack()
+            self._loading_bar.start(12)
+            self._animate_loading_spinner()
 
-            kode_list = load_bagian_codes(self.periode_id)
-            if self.bagian_aktif not in kode_list:
-                self.bagian_aktif = kode_list[0]
-            self.refresh_bagian_buttons()
+            # Posisikan tepat di tengah window yang sedang diproses.
+            self.update_idletasks()
+            win.update_idletasks()
+            self.center_window(win, owner)
+            try:
+                win.lift(owner)
+                win.focus_force()
+            except Exception:
+                pass
+            # update() sengaja dipakai di sini, bukan hanya update_idletasks(),
+            # agar jendela loading benar-benar sempat digambar sebelum proses
+            # berikutnya dimulai. Tanpa ini Windows kadang hanya menampilkan
+            # frame/jendela kosong ketika proses refresh langsung berjalan.
+            win.update()
+            self.update()
+            # Jangan grab_set: proses refresh masih perlu dapat menampilkan
+            # messagebox jika terjadi error.
+        except Exception:
+            self._loading_win = None
 
-            # Reload kegiatan aktif
-            self.load_bagian_data()
+        try:
+            self.update()
+        except Exception:
+            pass
 
-            # Reload kalender
-            self.load_kalender()
+    def _animate_loading_spinner(self):
+        """Menggerakkan spinner loading secara ringan melalui event loop Tkinter."""
+        try:
+            win = getattr(self, "_loading_win", None)
+            spinner = getattr(self, "_loading_spinner", None)
+            if win is None or spinner is None or not win.winfo_exists():
+                return
+            try:
+                owner = win.transient()
+                if owner:
+                    win.lift(owner)
+                else:
+                    win.lift()
+            except Exception:
+                pass
+            frames = ("◐", "◓", "◑", "◒")
+            idx = getattr(self, "_loading_spinner_index", 0)
+            spinner.config(text=frames[idx % len(frames)])
+            self._loading_spinner_index = idx + 1
+            self._loading_spinner_job = self.after(100, self._animate_loading_spinner)
+        except Exception:
+            self._loading_spinner_job = None
 
-            # Reload tabel data pegawai
-            if hasattr(
-                self,
-                "refresh_data_pegawai"
-            ):
-                self.refresh_data_pegawai()
+    def hide_loading(self):
+        """Menutup indikator loading jika sedang tampil."""
+        try:
+            job = getattr(self, "_loading_spinner_job", None)
+            if job is not None:
+                self.after_cancel(job)
+        except Exception:
+            pass
+        self._loading_spinner_job = None
+        try:
+            if hasattr(self, "_loading_bar") and self._loading_bar is not None:
+                self._loading_bar.stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_loading_win") and self._loading_win is not None:
+                self._loading_win.destroy()
+        except Exception:
+            pass
+        self._loading_win = None
+        self._loading_bar = None
+        self._loading_label = None
+        self._loading_spinner = None
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
 
-            # Refresh seluruh tampilan yang bergantung pada database.
-            # Satu pintu refresh supaya setelah import/edit/hapus tidak ada
-            # tampilan yang tertinggal memakai data lama.
-            self.refresh_pj_options()
-            self.refresh_selection_table()
-            self.refresh_data_kegiatan()
-            self.load_kalender_keseluruhan()
+    def refresh_after_schedule(self, text="Menyegarkan kalender dan data...", parent=None):
+        """Refresh bertahap setelah penambahan/penghapusan jadwal."""
+        if getattr(self, "_schedule_refresh_in_progress", False):
+            return
 
-            # Update header
-            nama_header = self.nama_bagian_var.get().strip() if hasattr(self, "nama_bagian_var") else f"Kegiatan {self.bagian_aktif}"
-            self.header_period.config(
-                text=(
-                    f"{NAMA_BULAN[self.bulan]} "
-                    f"{self.tahun}"
-                    f"  •  {nama_header}"
+        self._schedule_refresh_in_progress = True
+        overall_parent = (
+            parent is not None
+            and getattr(self, "overall_calendar_window", None) is not None
+            and parent == self.overall_calendar_window
+            and self.overall_calendar_window.winfo_exists()
+        )
+        if overall_parent:
+            # Gunakan overlay di dalam Kalender Keseluruhan. Toplevel loading
+            # terpisah dapat tertutup di belakang window kalender pada Windows/DPI.
+            self._show_overall_loading_overlay(
+                self.overall_calendar_window,
+                text
+            )
+            try:
+                self.overall_calendar_window.lift()
+                self.overall_calendar_window.focus_force()
+                self.overall_calendar_window.update_idletasks()
+                self.overall_calendar_window.update()
+            except Exception:
+                pass
+        else:
+            self.show_loading(text, parent=parent or self)
+        # Pastikan indikator sempat tampil dan animasinya berjalan sebelum
+        # proses refresh dimulai, terutama jika refresh dipicu dari
+        # Kalender Keseluruhan (window Toplevel).
+        try:
+            self.update_idletasks()
+            self.update()
+        except Exception:
+            pass
+
+        steps = [
+            ("Memperbarui kalender kegiatan...", self.load_kalender),
+            ("Memperbarui data pegawai...", self.refresh_data_pegawai),
+            ("Memperbarui data kegiatan...", self.refresh_data_kegiatan),
+            ("Memperbarui kalender keseluruhan...", self.load_kalender_keseluruhan),
+        ]
+
+        def jalankan(index=0):
+            if index >= len(steps):
+                self._schedule_refresh_in_progress = False
+                if overall_parent:
+                    self._hide_overall_loading_overlay()
+                    try:
+                        self.overall_calendar_window.lift()
+                        self.overall_calendar_window.focus_force()
+                    except Exception:
+                        pass
+                else:
+                    self.hide_loading()
+                return
+
+            label, fungsi = steps[index]
+            try:
+                if overall_parent:
+                    if getattr(self, "_overall_loading_label", None) is not None:
+                        self._overall_loading_label.config(text=label)
+                    self.overall_calendar_window.lift()
+                    self.overall_calendar_window.update_idletasks()
+                    self.overall_calendar_window.update()
+                else:
+                    if getattr(self, "_loading_label", None) is not None:
+                        self._loading_label.config(text=label)
+                    self.update()
+                fungsi()
+                if overall_parent:
+                    self.overall_calendar_window.update_idletasks()
+                    self.overall_calendar_window.update()
+                else:
+                    self.update()
+            except Exception as e:
+                self._schedule_refresh_in_progress = False
+                if overall_parent:
+                    self._hide_overall_loading_overlay()
+                else:
+                    self.hide_loading()
+                messagebox.showerror(
+                    "Refresh Gagal",
+                    "Perubahan tersimpan, tetapi tampilan belum dapat diperbarui. Silakan coba Refresh.",
+                    parent=parent or self
                 )
-            )
+                return
 
-        except Exception as e:
+            self.after(70, lambda: jalankan(index + 1))
 
-            messagebox.showerror(
-                "Refresh Gagal",
-                f"Terjadi kesalahan saat refresh:\n\n{e}"
+        # Beri jeda awal agar spinner benar-benar sempat menggambar frame
+        # pertamanya di depan Kalender Keseluruhan sebelum refresh berat dimulai.
+        self.after(220, jalankan)
+
+    def refresh_all(self):
+        """
+        Refresh dilakukan bertahap supaya event loop Tkinter tetap hidup.
+        Dengan demikian spinner benar-benar bergerak selama proses refresh,
+        bukan hanya menampilkan jendela 'Memuat' yang diam/kosong.
+        """
+        if getattr(self, "_refresh_in_progress", False):
+            return
+
+        self._refresh_in_progress = True
+        self.show_loading("Menyegarkan data dan kalender...")
+
+        steps = [
+            ("Memuat data pegawai...", self._refresh_step_pegawai),
+            ("Memuat periode dan kegiatan...", self._refresh_step_periode),
+            ("Memuat kalender kegiatan...", self._refresh_step_kalender),
+            ("Memperbarui data pegawai...", self._refresh_step_data_pegawai),
+            ("Memperbarui daftar pegawai dan PJ...", self._refresh_step_selection),
+            ("Memperbarui data kegiatan...", self._refresh_step_data_kegiatan),
+            ("Memperbarui kalender keseluruhan...", self._refresh_step_kalender_keseluruhan),
+            ("Memperbarui tampilan...", self._refresh_step_header),
+        ]
+
+        def jalankan(index=0):
+            if index >= len(steps):
+                self._refresh_in_progress = False
+                self.hide_loading()
+                return
+
+            label, fungsi = steps[index]
+            try:
+                if getattr(self, "_loading_label", None) is not None:
+                    self._loading_label.config(text=label)
+                # Beri kesempatan Tkinter menggambar spinner sebelum setiap
+                # tahap dimulai dan setelah tahap selesai.
+                self.update()
+                fungsi()
+                self.update()
+            except Exception as e:
+                self._refresh_in_progress = False
+                self.hide_loading()
+                messagebox.showerror(
+                    "Refresh Gagal",
+                    "Refresh belum dapat diselesaikan. Silakan coba lagi.",
+                    parent=self
+                )
+                return
+
+            # Jeda kecil ini sangat penting: event loop mendapat kesempatan
+            # menjalankan animasi spinner di antara tahap-tahap refresh.
+            self.after(35, lambda: jalankan(index + 1))
+
+        self.after(180, jalankan)
+
+    def _refresh_step_pegawai(self):
+        self.pegawai = load_pegawai()
+
+    def _refresh_step_periode(self):
+        bulan = NAMA_BULAN.index(self.bulan_var.get())
+        tahun = int(self.tahun_var.get())
+
+        self.bulan = bulan
+        self.tahun = tahun
+        self.periode_id = get_or_create_periode(bulan, tahun)
+
+        kode_list = load_bagian_codes(self.periode_id)
+        if self.bagian_aktif not in kode_list:
+            self.bagian_aktif = kode_list[0]
+        self.refresh_bagian_buttons()
+        self.load_bagian_data()
+
+    def _refresh_step_kalender(self):
+        self.load_kalender()
+
+    def _refresh_step_data_pegawai(self):
+        if hasattr(self, "refresh_data_pegawai"):
+            self.refresh_data_pegawai()
+
+    def _refresh_step_selection(self):
+        self.refresh_pj_options()
+        self.refresh_selection_table()
+
+    def _refresh_step_data_kegiatan(self):
+        self.refresh_data_kegiatan()
+
+    def _refresh_step_kalender_keseluruhan(self):
+        self.load_kalender_keseluruhan()
+
+    def _refresh_step_header(self):
+        nama_header = (
+            self.nama_bagian_var.get().strip()
+            if hasattr(self, "nama_bagian_var")
+            else f"Kegiatan {self.bagian_aktif}"
+        )
+        self.header_period.config(
+            text=(
+                f"{NAMA_BULAN[self.bulan]} "
+                f"{self.tahun}"
+                f"  •  {nama_header}"
             )
+        )
 
     # =====================================================
     # PENGATURAN
@@ -1231,7 +2236,7 @@ class App(tk.Tk):
 
         container = tk.Frame(
             self.tab_pengaturan,
-            bg="#F4F6F8"
+            bg=UI_BG
         )
         container.pack(
             fill="both",
@@ -1240,33 +2245,22 @@ class App(tk.Tk):
 
         canvas = tk.Canvas(
             container,
-            bg="#F4F6F8",
+            bg=UI_BG,
             highlightthickness=0
         )
-        canvas.pack(
-            side="left",
-            fill="both",
-            expand=True
-        )
-
-        scrollbar = ttk.Scrollbar(
-            container,
-            orient="vertical",
-            command=canvas.yview
-        )
-        scrollbar.pack(
-            side="right",
-            fill="y"
-        )
-
-        canvas.configure(
-            yscrollcommand=scrollbar.set
-        )
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        hscroll = ttk.Scrollbar(container, orient="horizontal", command=canvas.xview)
+        hscroll.grid(row=1, column=0, sticky="ew")
+        canvas.configure(yscrollcommand=scrollbar.set, xscrollcommand=hscroll.set)
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
 
         # Frame isi yang bisa discroll
         scroll_frame = tk.Frame(
             canvas,
-            bg="#F4F6F8"
+            bg=UI_BG
         )
 
         canvas_window = canvas.create_window(
@@ -1281,20 +2275,14 @@ class App(tk.Tk):
             )
 
         def resize_scroll_frame(event):
-            canvas.itemconfig(
-                canvas_window,
-                width=event.width
-            )
+            try:
+                req_w = scroll_frame.winfo_reqwidth()
+                canvas.itemconfig(canvas_window, width=max(event.width, req_w))
+            except Exception:
+                pass
 
-        scroll_frame.bind(
-            "<Configure>",
-            update_scroll_region
-        )
-
-        canvas.bind(
-            "<Configure>",
-            resize_scroll_frame
-        )
+        scroll_frame.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", resize_scroll_frame)
 
         # Mouse wheel
         def scroll_mousewheel(event):
@@ -1311,7 +2299,7 @@ class App(tk.Tk):
         # =====================================================
         # LAYOUT UTAMA: PENGATURAN DI KIRI, PEGAWAI DI KANAN
         # =====================================================
-        frame = tk.Frame(scroll_frame, bg="#F4F6F8")
+        frame = tk.Frame(scroll_frame, bg=UI_BG)
         frame.pack(fill="both", expand=True, padx=20, pady=18)
         frame.grid_columnconfigure(0, weight=0, minsize=390)
         frame.grid_columnconfigure(1, weight=1)
@@ -1322,13 +2310,13 @@ class App(tk.Tk):
         frame.grid_rowconfigure(1, weight=1)
 
         settings = tk.LabelFrame(
-            frame, text="  PENGATURAN KEGIATAN  ", bg="#F4F6F8",
+            frame, text="  PENGATURAN KEGIATAN  ", bg=UI_BG,
             font=("Segoe UI", 12, "bold"), padx=18, pady=14
         )
         settings.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         settings.grid_columnconfigure(1, weight=1)
 
-        tk.Label(settings, text="Deskripsi", bg="#F4F6F8").grid(row=0, column=0, sticky="nw", pady=8)
+        tk.Label(settings, text="Deskripsi", bg=UI_BG).grid(row=0, column=0, sticky="nw", pady=8)
         # State teks deskripsi. StringVar dipertahankan untuk kompatibilitas
         # dengan loader lama, sedangkan widget utama menggunakan Text agar
         # deskripsi panjang bisa dibaca dan diedit beberapa baris.
@@ -1339,22 +2327,18 @@ class App(tk.Tk):
         )
         self.kegiatan_text.grid(row=0, column=1, sticky="ew", pady=8)
 
-        tk.Label(settings, text="Lokasi", bg="#F4F6F8").grid(row=1, column=0, sticky="w", pady=8)
-        self.lokasi_var = tk.StringVar()
-        ttk.Entry(settings, textvariable=self.lokasi_var, width=34).grid(row=1, column=1, sticky="ew", pady=8)
-
-        tk.Label(settings, text="Penanggung Jawab", bg="#F4F6F8", font=("Segoe UI", 10, "bold")).grid(row=2, column=0, sticky="w", pady=8)
+        tk.Label(settings, text="Penanggung Jawab", bg=UI_BG, font=("Segoe UI", 10, "bold")).grid(row=1, column=0, sticky="w", pady=8)
         self.pj_var = tk.StringVar()
         self.pj_options = {}
         self.combo_pj = ttk.Combobox(settings, textvariable=self.pj_var, state="readonly", width=31)
-        self.combo_pj.grid(row=2, column=1, sticky="ew", pady=8)
+        self.combo_pj.grid(row=1, column=1, sticky="ew", pady=8)
 
-        tk.Label(settings, text="Dana Bulanan", bg="#F4F6F8", font=("Segoe UI", 10, "bold")).grid(row=3, column=0, sticky="w", pady=8)
+        tk.Label(settings, text="Dana Bulanan", bg=UI_BG, font=("Segoe UI", 10, "bold")).grid(row=2, column=0, sticky="w", pady=8)
         self.dana_var = tk.StringVar()
-        ttk.Entry(settings, textvariable=self.dana_var, width=20).grid(row=3, column=1, sticky="w", pady=8)
+        ttk.Entry(settings, textvariable=self.dana_var, width=20).grid(row=2, column=1, sticky="w", pady=8)
 
-        tk.Label(settings, text="Double-click nama kegiatan di atas untuk mengganti nama.", bg="#F4F6F8", fg="#666666", font=("Segoe UI", 9)).grid(row=4, column=0, columnspan=2, sticky="w", pady=(14, 4))
-        tk.Label(settings, text="Nama kegiatan hanya label tampilan.", bg="#F4F6F8", fg="#777777", font=("Segoe UI", 8)).grid(row=5, column=0, columnspan=2, sticky="w")
+        tk.Label(settings, text="Double-click nama kegiatan di atas untuk mengganti nama.", bg=UI_BG, fg=UI_MUTED, font=("Segoe UI", 9)).grid(row=3, column=0, columnspan=2, sticky="w", pady=(14, 4))
+        tk.Label(settings, text="Nama kegiatan hanya label tampilan.", bg=UI_BG, fg="#6B7280", font=("Segoe UI", 8)).grid(row=4, column=0, columnspan=2, sticky="w")
 
         # =====================================================
         # KONTROL PEGAWAI (BARIS ATAS)
@@ -1363,7 +2347,7 @@ class App(tk.Tk):
         # dan pencarian. Tabel pegawai dipindahkan ke baris kedua agar
         # memanfaatkan seluruh lebar jendela.
         pegawai_panel = tk.LabelFrame(
-            frame, text="  PEGAWAI UNTUK KEGIATAN INI  ", bg="#F4F6F8",
+            frame, text="  PEGAWAI UNTUK KEGIATAN INI  ", bg=UI_BG,
             font=("Segoe UI", 12, "bold"), padx=10, pady=8
         )
         pegawai_panel.grid(row=0, column=1, sticky="nsew")
@@ -1371,40 +2355,29 @@ class App(tk.Tk):
 
         tk.Label(
             pegawai_panel,
-            text="Pilih pegawai secara manual, atau gunakan penentuan otomatis berdasarkan dana.",
-            bg="#F4F6F8", fg="#666666"
+            text="Pilih pegawai secara manual. Komposisi target menjadi acuan jumlah turun per golongan.",
+            bg=UI_BG, fg=UI_MUTED
         ).grid(row=0, column=0, sticky="w", pady=(0, 7))
 
-        tombol_frame = tk.Frame(pegawai_panel, bg="#F4F6F8")
+        tombol_frame = tk.Frame(pegawai_panel, bg=UI_BG)
         tombol_frame.grid(row=1, column=0, sticky="w", pady=(0, 7))
         ttk.Button(
             tombol_frame,
-            text="AUTO TENTUKAN BERDASARKAN DANA",
-            command=self.auto_tentukan
+            text="⚙ Tentukan Komposisi Target",
+            command=self.tentukan_komposisi_target
         ).pack(side="left", padx=(0, 6))
-        ttk.Button(
-            tombol_frame,
-            text="⚙ ATUR KOMPOSISI",
-            command=self.buka_komposisi_manual
-        ).pack(side="left", padx=(0, 6))
-        self.btn_acak_lagi = ttk.Button(
-            tombol_frame,
-            text="🔀 ACAK LAGI",
-            command=self.acak_lagi,
-            state="disabled"
-        )
-        self.btn_acak_lagi.pack(side="left")
 
         self.info_dana = tk.Label(
             pegawai_panel,
-            text="Pegawai terpilih: 0    •    Total: Rp 0",
-            bg="#F4F6F8",
-            font=("Segoe UI", 11, "bold")
+            text="Pegawai terpilih: 0 orang",
+            bg=UI_BG,
+            fg=UI_TEXT,
+            font=("Segoe UI Semibold", 11, "bold")
         )
         self.info_dana.grid(row=2, column=0, sticky="w", pady=(2, 7))
 
         # Simpan tetap berada di bagian atas agar mudah ditemukan.
-        save_frame = tk.Frame(pegawai_panel, bg="#F4F6F8")
+        save_frame = tk.Frame(pegawai_panel, bg=UI_BG)
         save_frame.grid(row=3, column=0, sticky="ew", pady=(0, 7))
         save_frame.grid_columnconfigure(0, weight=1)
         ttk.Button(
@@ -1424,7 +2397,7 @@ class App(tk.Tk):
         # yang dipilih di kanan. Ini membantu pengguna memilih manual.
         selection_area = tk.Frame(
             parent,
-            bg="#F4F6F8",
+            bg=UI_BG,
             height=520
         )
         selection_area.grid_propagate(False)
@@ -1442,7 +2415,7 @@ class App(tk.Tk):
 
         # Pencarian ditempatkan tepat di atas daftar nama pegawai, bukan
         # di dalam panel kontrol "Pegawai untuk Kegiatan Ini".
-        search_frame = tk.Frame(selection_area, bg="#F4F6F8")
+        search_frame = tk.Frame(selection_area, bg=UI_BG)
         search_frame.grid(
             row=0, column=0, sticky="ew",
             padx=(0, 0), pady=(0, 8)
@@ -1452,7 +2425,7 @@ class App(tk.Tk):
         tk.Label(
             search_frame,
             text="Cari Pegawai:",
-            bg="#F4F6F8",
+            bg=UI_BG,
             font=("Segoe UI", 10, "bold")
         ).grid(row=0, column=0, sticky="w", padx=(0, 8))
 
@@ -1478,7 +2451,7 @@ class App(tk.Tk):
 
         table_area = tk.Frame(
             selection_area,
-            bg="#F4F6F8"
+            bg=UI_BG
         )
         table_area.grid(row=1, column=0, sticky="nsew")
         table_area.grid_columnconfigure(0, weight=1)
@@ -1495,6 +2468,7 @@ class App(tk.Tk):
         table_frame.pack_propagate(False)
 
         columns = (
+            "no",
             "pilih",
             "nama",
             "golongan",
@@ -1510,6 +2484,7 @@ class App(tk.Tk):
         )
 
         heads = {
+            "no": "No.",
             "pilih": "✓",
             "nama": "Nama",
             "golongan": "Golongan",
@@ -1518,7 +2493,8 @@ class App(tk.Tk):
         }
 
         widths = {
-            "pilih": 60,
+            "no": 58,
+            "pilih": 52,
             "nama": 330,
             "golongan": 110,
             "jabatan": 260,
@@ -1548,19 +2524,29 @@ class App(tk.Tk):
         self.table_pilih.column("jabatan", anchor="w")
 
         self.table_pilih.pack(
-            side="left",
+            side="top",
             fill="both",
             expand=True
         )
 
-        scroll_table = ttk.Scrollbar(
-            table_frame,
-            orient="vertical",
-            command=self.table_pilih.yview
+        scroll_table = tk.Scrollbar(
+            table_frame, orient="vertical", command=self.table_pilih.yview,
+            width=14, bg="#CBD5E1", troughcolor="#F1F5F9",
+            activebackground="#94A3B8", relief="flat", bd=0
         )
         scroll_table.pack(side="right", fill="y")
+        scroll_table_x = tk.Scrollbar(
+            table_frame, orient="horizontal", command=self.table_pilih.xview,
+            width=14, bg="#CBD5E1", troughcolor="#F1F5F9",
+            activebackground="#94A3B8", relief="flat", bd=0
+        )
+        scroll_table_x.pack(side="bottom", fill="x")
 
-        self.table_pilih.configure(yscrollcommand=scroll_table.set)
+        self.table_pilih.configure(
+            yscrollcommand=scroll_table.set,
+            xscrollcommand=scroll_table_x.set
+        )
+        self.modernize_tree(self.table_pilih)
         self.table_pilih.bind("<ButtonRelease-1>", self.toggle_pegawai)
 
         # Ringkasan komposisi manual di sebelah kanan.
@@ -1590,7 +2576,7 @@ class App(tk.Tk):
             self.komposisi_frame,
             text="Ringkasan pegawai terpilih",
             bg="white",
-            fg="#666666",
+            fg=UI_MUTED,
             font=("Segoe UI", 9)
         ).pack(anchor="w", padx=15)
 
@@ -1614,260 +2600,235 @@ class App(tk.Tk):
         self.refresh_selection_table()
 
     def refresh_komposisi_manual(self):
-        """Bangun ulang panel komposisi dari nol berdasarkan pilihan TERKINI."""
+        """Menampilkan rincian target turun dan nilai uangnya."""
         if not hasattr(self, "komposisi_text"):
             return
-
-        # Selalu bersihkan isi lama terlebih dahulu. Ini penting saat
-        # komposisi/kegiatan diganti agar teks dari pilihan sebelumnya
-        # tidak pernah tertinggal di panel.
         self.komposisi_text.configure(state="normal")
         self.komposisi_text.delete("1.0", "end")
 
-        kelompok = {}
-        total = 0
-        jumlah = 0
+        target = getattr(self, "komposisi_target", {}) or {}
+        target_tarif = getattr(self, "komposisi_target_tarif", {}) or {}
 
-        selected_ids = set(getattr(self, "selected_ids", set()))
-        for p in self.pegawai:
-            if p[0] not in selected_ids:
-                continue
-
-            # Gunakan GOLONGAN UTAMA (p[5]), bukan golongan asli p[4].
-            golongan = (p[5] or "-").strip()
-            tarif = int(p[7] or 0)
-            key = (golongan, tarif)
-            kelompok[key] = kelompok.get(key, 0) + 1
-            total += tarif
-            jumlah += 1
-
-        lines = []
-        if not kelompok:
-            lines.append("Belum ada pegawai yang dipilih.")
+        if not target:
+            text = (
+                "Belum ada komposisi target.\n\n"
+                "Klik 'Tentukan Komposisi Target' untuk menghitung kebutuhan "
+                "turun berdasarkan dana bulanan."
+            )
         else:
-            # Penanggung jawab selalu wajib ikut terpilih. Tampilkan terpisah
-            # supaya golongan PJ tidak terlihat seperti sisa dari komposisi lama.
-            pj_id = getattr(self, "penanggung_jawab_id", None)
-            pj = next((p for p in self.pegawai if p[0] == pj_id and p[0] in selected_ids), None)
-            if pj:
-                lines.append(f"PJ wajib: {pj[1]}")
-                lines.append(f"• Gol {((pj[5] or '-').strip())}: {rupiah(pj[7] or 0)}")
-                lines.append("")
-
-            # Tampilkan hanya berdasarkan pilihan TERKINI.
-            for (golongan, tarif), banyak in sorted(
-                kelompok.items(),
-                key=lambda x: (str(x[0][0]), x[0][1])
-            ):
-                subtotal = banyak * tarif
-                lines.append(f"• Gol {golongan}: {banyak} orang")
+            lines = ["TARGET KOMPOSISI TURUN", ""]
+            total_target_uang = 0
+            total_target_turun = 0
+            for golongan, jumlah in sorted(target.items()):
+                jumlah = int(jumlah)
+                tarif = int(target_tarif.get(golongan, 0))
+                subtotal = jumlah * tarif
+                total_target_turun += jumlah
+                total_target_uang += subtotal
                 lines.append(
-                    f"  {rupiah(tarif)} × {banyak} = {rupiah(subtotal)}"
+                    f"• Gol {golongan}: {jumlah} turun × {rupiah(tarif)} = {rupiah(subtotal)}"
                 )
 
-            lines.append("")
-            lines.append(f"Jumlah pegawai : {jumlah} orang")
-            lines.append(f"Total tarif    : {rupiah(total)}")
+            lines += [
+                "",
+                f"Total target turun : {total_target_turun} kali",
+                f"Total target uang  : {rupiah(total_target_uang)}",
+                "",
+                "Nama pegawai tidak dipilih otomatis.",
+                "Pegawai dan tanggal penugasan dipilih manual pada kalender."
+            ]
+            text = "\n".join(lines)
 
-        self.komposisi_text.insert("1.0", "\n".join(lines))
+        self.komposisi_text.insert("1.0", text)
         self.komposisi_text.configure(state="disabled")
 
-    def pilih_kombinasi_dialog(self, hasil, dana, nama_pj):
-        """Dialog pilihan kombinasi dengan kartu yang bisa membungkus teks."""
+    def pilih_kombinasi_dialog(self, hasil, dana, nama_pj=""):
+        """Memilih salah satu komposisi target berdasarkan jumlah TURUN."""
         win = tk.Toplevel(self)
-        win.title("Pilih Komposisi Kegiatan")
+        self.enable_native_window_controls(win)
+        win.title("Pilih Komposisi Target")
         win.geometry("1200x760")
         win.minsize(950, 620)
         win.transient(self)
+        self.enable_native_window_controls(win)
         win.grab_set()
+        self.enable_native_window_controls(win)
+        self.center_window(win, self)
 
         tk.Label(
             win,
-            text=f"Ditemukan {len(hasil)} kombinasi yang tepat untuk {rupiah(dana)}",
+            text=f"Ditemukan {len(hasil)} komposisi tepat untuk {rupiah(dana)}",
             font=("Segoe UI", 14, "bold")
         ).pack(anchor="w", padx=24, pady=(18, 4))
         tk.Label(
             win,
-            text=f"PJ wajib: {nama_pj}  •  Pilih salah satu komposisi di bawah.",
-            fg="#666666", font=("Segoe UI", 10)
+            text="Komposisi dihitung dalam JUMLAH TURUN. Pegawai tidak dipilih otomatis.",
+            fg=UI_MUTED, font=("Segoe UI", 10)
         ).pack(anchor="w", padx=24, pady=(0, 12))
 
-        outer = tk.Frame(win, bg="#E9EDF0")
+        outer = tk.Frame(win, bg="#F3F4F6")
         outer.pack(fill="both", expand=True, padx=24, pady=(0, 12))
         outer.grid_rowconfigure(0, weight=1)
         outer.grid_columnconfigure(0, weight=1)
 
-        canvas = tk.Canvas(outer, highlightthickness=0, bg="#E9EDF0")
+        canvas = tk.Canvas(outer, highlightthickness=0, bg="#F3F4F6")
         canvas.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        content = tk.Frame(canvas, bg="#E9EDF0")
+        content = tk.Frame(canvas, bg="#F3F4F6")
         window_id = canvas.create_window((0, 0), window=content, anchor="nw")
         content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
 
         selected = tk.IntVar(value=hasil[0]["nomor"] if hasil else 0)
 
-        def format_signature(signature):
-            parts = []
-            for golongan, tarif, jumlah in signature:
-                parts.append(f"Gol {golongan}: {jumlah} orang ({rupiah(tarif)} / orang)")
-            return "  •  ".join(parts)
-
         for item in hasil:
             card = tk.Frame(content, bg="white", bd=1, relief="solid", padx=12, pady=10)
             card.pack(fill="x", padx=8, pady=5)
-            signature_text = format_signature(item["signature"])
-            jumlah_total = sum(x[2] for x in item["signature"])
-            total = sum(x[1] * x[2] for x in item["signature"])
+
+            parts = []
+            for golongan, tarif, jumlah in item["signature"]:
+                subtotal = int(tarif) * int(jumlah)
+                parts.append(
+                    f"Gol {golongan}: {jumlah} turun × {rupiah(tarif)} = {rupiah(subtotal)}"
+                )
+            signature_text = "\n".join(parts)
 
             rb = ttk.Radiobutton(card, variable=selected, value=item["nomor"])
             rb.grid(row=0, column=0, rowspan=2, padx=(2, 10), sticky="n")
-            tk.Label(card, text=f"Komposisi {item['nomor']}", bg="white", font=("Segoe UI", 10, "bold")).grid(row=0, column=1, sticky="w")
-            tk.Label(card, text=signature_text, bg="white", justify="left", anchor="w", wraplength=820, font=("Segoe UI", 10)).grid(row=1, column=1, sticky="w", pady=(4, 0))
-            tk.Label(card, text=f"{jumlah_total} orang  •  {rupiah(total)}", bg="white", fg="#555555", font=("Segoe UI", 9, "bold")).grid(row=0, column=2, rowspan=2, padx=(18, 4), sticky="e")
+            tk.Label(
+                card, text=f"Komposisi {item['nomor']}", bg="white",
+                font=("Segoe UI", 10, "bold")
+            ).grid(row=0, column=1, sticky="w")
+            tk.Label(
+                card, text=signature_text, bg="white", justify="left",
+                anchor="w", wraplength=820, font=("Segoe UI", 10)
+            ).grid(row=1, column=1, sticky="w", pady=(4, 0))
+            tk.Label(
+                card,
+                text=f"{item['jumlah_turun']} kali turun  •  {rupiah(item['total'])}",
+                bg="white", fg=UI_MUTED, font=("Segoe UI", 9, "bold")
+            ).grid(row=0, column=2, rowspan=2, padx=(18, 4), sticky="e")
             card.grid_columnconfigure(1, weight=1)
             card.bind("<Button-1>", lambda e, n=item["nomor"]: selected.set(n))
 
         result = {"pilihan": None}
+
         buttons = tk.Frame(win)
         buttons.pack(fill="x", padx=24, pady=(0, 18))
 
         def pilih():
             if not selected.get():
-                messagebox.showwarning("Pilih Komposisi", "Pilih salah satu komposisi terlebih dahulu.", parent=win)
+                messagebox.showwarning(
+                    "Pilih Komposisi",
+                    "Pilih salah satu komposisi terlebih dahulu.",
+                    parent=win
+                )
                 return
             result["pilihan"] = selected.get()
             win.destroy()
 
-        ttk.Button(buttons, text="Batal", command=win.destroy).pack(side="right", padx=(8, 0), ipadx=14, ipady=4)
-        ttk.Button(buttons, text="Pilih Komposisi", command=pilih).pack(side="right", ipadx=14, ipady=4)
+        ttk.Button(
+            buttons, text="Batal", command=win.destroy
+        ).pack(side="right", padx=(8, 0), ipadx=14, ipady=4)
+        ttk.Button(
+            buttons, text="Pilih Komposisi", command=pilih
+        ).pack(side="right", ipadx=14, ipady=4)
+
         win.wait_window()
         return result["pilihan"]
 
     def buka_komposisi_manual(self):
-        """Atur komposisi berdasarkan golongan atau jabatan, lalu acak pegawai sesuai aturan."""
-        pj_id = self.get_selected_pj_id()
-        if not pj_id:
-            messagebox.showwarning("Penanggung Jawab", "Pilih penanggung jawab terlebih dahulu.")
-            return
-        self.penanggung_jawab_id = pj_id
-
+        """Menentukan target jumlah pegawai per golongan tanpa memilih nama."""
         gol_values = sorted({str(p[5] or "").strip() for p in self.pegawai if str(p[5] or "").strip()})
-        jab_values = sorted({str(p[6] or "").strip() for p in self.pegawai if str(p[6] or "").strip()})
-        criteria_values = {"Golongan": gol_values, "Jabatan": jab_values}
+        if not gol_values:
+            messagebox.showwarning("Komposisi", "Belum ada data golongan pegawai.", parent=self)
+            return
 
         win = tk.Toplevel(self)
-        win.title("Atur Komposisi Manual")
-        win.geometry("760x560")
-        win.minsize(680, 480)
+        self.enable_native_window_controls(win)
+        win.title("Tentukan Komposisi Target")
+        win.geometry("620x500")
+        win.minsize(560, 420)
         win.transient(self)
+        self.enable_native_window_controls(win)
         win.grab_set()
+        self.enable_native_window_controls(win)
+        self.center_window(win, self)
 
-        tk.Label(win, text="Atur Komposisi Pegawai", font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=20, pady=(18, 3))
-        tk.Label(win, text="Tentukan kriteria dan jumlah pegawai. Penanggung Jawab selalu ikut terpilih.", fg="#666666").pack(anchor="w", padx=20, pady=(0, 12))
+        tk.Label(win, text="Tentukan Komposisi Target", font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=20, pady=(18, 3))
+        tk.Label(win, text="Tentukan target JUMLAH TURUN. Golongan dengan tarif yang sama dapat dihitung sebagai satu kelompok.", fg=UI_MUTED, wraplength=560, justify="left").pack(anchor="w", padx=20, pady=(0, 14))
 
-        rows_frame = tk.Frame(win)
-        rows_frame.pack(fill="both", expand=True, padx=20)
-        rows_frame.grid_columnconfigure(1, weight=1)
-
+        frame = tk.Frame(win)
+        frame.pack(fill="both", expand=True, padx=20)
+        frame.grid_columnconfigure(1, weight=1)
         rows = []
 
-        def add_row(default_type="Golongan"):
-            r = len(rows)
-            tipe = tk.StringVar(value=default_type)
-            nilai = tk.StringVar()
-            jumlah = tk.IntVar(value=1)
-            cb_tipe = ttk.Combobox(rows_frame, textvariable=tipe, values=("Golongan", "Jabatan"), state="readonly", width=12)
-            cb_nilai = ttk.Combobox(rows_frame, textvariable=nilai, state="readonly", width=48)
-            sp_jumlah = tk.Spinbox(rows_frame, from_=1, to=99, textvariable=jumlah, width=6)
-            cb_tipe.grid(row=r, column=0, padx=(0, 8), pady=6, sticky="w")
-            cb_nilai.grid(row=r, column=1, padx=(0, 8), pady=6, sticky="ew")
-            sp_jumlah.grid(row=r, column=2, pady=6, sticky="w")
-            rows.append((tipe, nilai, jumlah, cb_nilai))
+        tk.Label(frame, text="Golongan", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 5))
+        tk.Label(frame, text="Jumlah", font=("Segoe UI", 9, "bold")).grid(row=0, column=1, sticky="w", pady=(0, 5))
 
-            def update_values(event=None):
-                vals = criteria_values.get(tipe.get(), [])
-                cb_nilai.configure(values=vals)
-                if nilai.get() not in vals:
-                    nilai.set(vals[0] if vals else "")
-            cb_tipe.bind("<<ComboboxSelected>>", update_values)
-            update_values()
+        def add_row(golongan=None, jumlah=1):
+            r = len(rows) + 1
+            gvar = tk.StringVar(value=golongan or gol_values[0])
+            jvar = tk.IntVar(value=jumlah)
+            cb = ttk.Combobox(frame, textvariable=gvar, values=gol_values, state="readonly", width=18)
+            sp = tk.Spinbox(frame, from_=1, to=999, textvariable=jvar, width=8)
+            cb.grid(row=r, column=0, sticky="w", pady=5)
+            sp.grid(row=r, column=1, sticky="w", pady=5)
+            rows.append((gvar, jvar))
 
-        tk.Label(rows_frame, text="Kriteria", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w")
-        tk.Label(rows_frame, text="Pilihan", font=("Segoe UI", 9, "bold")).grid(row=0, column=1, sticky="w")
-        tk.Label(rows_frame, text="Jumlah", font=("Segoe UI", 9, "bold")).grid(row=0, column=2, sticky="w")
-        add_row()
+        target = getattr(self, "komposisi_target", {}) or {}
+        if target:
+            for g, n in target.items():
+                add_row(g, n)
+        else:
+            add_row()
 
-        ttk.Button(win, text="＋ Tambah Kriteria", command=add_row).pack(anchor="w", padx=20, pady=10)
+        ttk.Button(win, text="＋ Tambah Golongan", command=add_row).pack(anchor="w", padx=20, pady=10)
 
-        preview = tk.Label(win, text="", justify="left", anchor="w", fg="#555555")
-        preview.pack(fill="x", padx=20, pady=(0, 8))
-
-        def apply_manual():
-            rules = []
-            for tipe, nilai, jumlah, _ in rows:
-                v = nilai.get().strip()
+        def simpan():
+            hasil = {}
+            for gvar, jvar in rows:
+                g = gvar.get().strip()
                 try:
-                    n = int(jumlah.get())
+                    n = int(jvar.get())
                 except Exception:
                     n = 0
-                if not v or n <= 0:
-                    continue
-                rules.append((tipe.get(), v, n))
-            if not rules:
-                messagebox.showwarning("Komposisi Kosong", "Masukkan minimal satu kriteria dan jumlah pegawai.", parent=win)
+                if g and n > 0:
+                    hasil[g] = hasil.get(g, 0) + n
+            if not hasil:
+                messagebox.showwarning("Komposisi Kosong", "Masukkan minimal satu target golongan.", parent=win)
                 return
-
-            selected = self.pilih_pegawai_manual_berdasarkan_aturan(rules, pj_id)
-            if selected is None:
-                return
-            self.selected_ids = {self.pegawai[i][0] for i in selected}
-            self.komposisi_aktif = None
-            self.refresh_selection_table()
+            self.komposisi_target = hasil
+            self.komposisi_target_tarif = getattr(self, "komposisi_target_tarif", {}) or {}
+            for p in self.pegawai:
+                gol = str(p[5] or "").strip()
+                if gol in hasil and gol not in self.komposisi_target_tarif:
+                    self.komposisi_target_tarif[gol] = int(p[7] or 0)
+            if getattr(self, "bagian_id", None):
+                conn = get_connection()
+                try:
+                    conn.execute("UPDATE bagian SET komposisi_target = ? WHERE id = ?", (json.dumps({
+                        "target": hasil,
+                        "tarif": self.komposisi_target_tarif
+                    }, ensure_ascii=False), self.bagian_id))
+                    conn.commit()
+                finally:
+                    conn.close()
             self.refresh_komposisi_manual()
-            if hasattr(self, "btn_acak_lagi"):
-                self.btn_acak_lagi.config(state="disabled")
+            self.update_calendar_summary()
             win.destroy()
 
         bottom = tk.Frame(win)
         bottom.pack(fill="x", padx=20, pady=(0, 18))
         ttk.Button(bottom, text="Batal", command=win.destroy).pack(side="right", padx=(8, 0))
-        ttk.Button(bottom, text="🎲 Acak Sesuai Komposisi", command=apply_manual).pack(side="right")
+        ttk.Button(bottom, text="Simpan Target", command=simpan).pack(side="right")
 
     def pilih_pegawai_manual_berdasarkan_aturan(self, rules, pj_id):
-        """Memilih pegawai acak sesuai aturan Golongan/Jabatan, dengan PJ wajib."""
-        riwayat = load_riwayat_turun(self.periode_id)
-        pool = [i for i, p in enumerate(self.pegawai) if p[0] != pj_id]
-        selected = []
-        used = set()
-
-        for tipe, nilai, jumlah in rules:
-            if tipe == "Golongan":
-                candidates = [i for i in pool if i not in used and str(self.pegawai[i][5] or "").strip() == nilai]
-            else:
-                candidates = [i for i in pool if i not in used and str(self.pegawai[i][6] or "").strip() == nilai]
-            if len(candidates) < jumlah:
-                messagebox.showwarning(
-                    "Pegawai Tidak Cukup",
-                    f"Kriteria {tipe} '{nilai}' membutuhkan {jumlah} orang, tetapi hanya tersedia {len(candidates)} orang yang belum terpilih."
-                )
-                return None
-            random.shuffle(candidates)
-            candidates.sort(key=lambda i: (riwayat.get(self.pegawai[i][0], {}).get("bulan_ini", 0), riwayat.get(self.pegawai[i][0], {}).get("total", 0)))
-            picked = candidates[:jumlah]
-            selected.extend(picked)
-            used.update(picked)
-
-        pj_index = next((i for i, p in enumerate(self.pegawai) if p[0] == pj_id), None)
-        if pj_index is None:
-            messagebox.showerror("Penanggung Jawab", "Data penanggung jawab tidak ditemukan.")
-            return None
-        if pj_index not in selected:
-            selected.insert(0, pj_index)
-        return selected
+        """Kompatibilitas lama: aturan komposisi tidak lagi memilih nama otomatis."""
+        return None
 
     def refresh_selection_table(self):
 
@@ -1905,7 +2866,7 @@ class App(tk.Tk):
             )
 
         total = 0
-        nomor_baris = 0
+        nomor_baris = 1
 
         for p in self.pegawai:
 
@@ -1948,6 +2909,7 @@ class App(tk.Tk):
                 "end",
                 iid=str(pegawai_id),
                 values=(
+                    nomor_baris,
                     tanda,
                     p[1],
                     p[5],
@@ -1971,12 +2933,7 @@ class App(tk.Tk):
         # =====================================================
 
         self.info_dana.config(
-            text=(
-                f"Pegawai terpilih: "
-                f"{len(self.selected_ids)}"
-                f"    •    Total: "
-                f"{rupiah(total)}"
-            )
+            text=f"Pegawai terpilih: {len(self.selected_ids)} orang"
         )
 
         self.refresh_komposisi_manual()
@@ -2103,16 +3060,19 @@ class App(tk.Tk):
             UPDATE bagian
             SET nama_bagian = ?,
                 kegiatan = ?,
-                lokasi = ?,
                 dana = ?,
-                penanggung_jawab_id = ?
+                penanggung_jawab_id = ?,
+                komposisi_target = ?
             WHERE id = ?
         """, (
             nama_bagian,
             self.get_deskripsi(),
-            self.lokasi_var.get().strip(),
             dana,
             pj_id,
+            json.dumps({
+                "target": getattr(self, "komposisi_target", {}) or {},
+                "tarif": getattr(self, "komposisi_target_tarif", {}) or {}
+            }, ensure_ascii=False),
             self.bagian_id
         ))
 
@@ -2162,8 +3122,7 @@ class App(tk.Tk):
             f"• Pegawai kegiatan ini\n"
             f"• Jadwal penugasan kegiatan ini\n"
             f"• Kegiatan\n"
-            f"• Lokasi\n"
-            f"• Dana bulanan\n\n"
+                        f"• Dana bulanan\n\n"
             f"Data kegiatan lain tidak akan terpengaruh."
         )
 
@@ -2198,7 +3157,8 @@ class App(tk.Tk):
             SET kegiatan = '',
                 lokasi = '',
                 dana = 0,
-                penanggung_jawab_id = NULL
+                penanggung_jawab_id = NULL,
+                komposisi_target = ''
             WHERE id = ?
             """,
             (self.bagian_id,)
@@ -2209,17 +3169,14 @@ class App(tk.Tk):
 
         # Reset tampilan
         self.set_deskripsi("")
-        self.lokasi_var.set("")
         self.dana_var.set("")
 
         self.selected_ids = set()
+        self.komposisi_target = {}
+        self.komposisi_target_tarif = {}
 
         if hasattr(self, "komposisi_aktif"):
             del self.komposisi_aktif
-
-        self.btn_acak_lagi.config(
-            state="disabled"
-        )
 
         self.refresh_selection_table()
         self.load_kalender()
@@ -2234,183 +3191,14 @@ class App(tk.Tk):
         # Acak Pegawai
         # =====================================================
     
-    def acak_pegawai_dari_komposisi(self, hasil_item):
-        """Acak pegawai sesuai komposisi, tetapi PJ selalu dipertahankan."""
-        kelompok = {}
-        for i, p in enumerate(self.pegawai):
-            key = (p[5] or "Tidak diketahui", p[7])
-            kelompok.setdefault(key, []).append(i)
+    def acak_pegawai_dari_komposisi(self, *args, **kwargs):
+        messagebox.showinfo("Fitur Dihapus", "Pemilihan otomatis/acak sudah dihapus. Pilih pegawai secara manual.", parent=self)
 
-        pegawai_terpilih = []
-        pj_id = getattr(self, "penanggung_jawab_id", None)
-        pj_index = next((i for i, p in enumerate(self.pegawai) if p[0] == pj_id), None)
+    def acak_lagi(self, *args, **kwargs):
+        messagebox.showinfo("Fitur Dihapus", "Pemilihan otomatis/acak sudah dihapus. Pilih pegawai secara manual.", parent=self)
 
-        if pj_index is None:
-            messagebox.showerror(
-                "Penanggung Jawab",
-                "Penanggung jawab belum dipilih."
-            )
-            return []
-
-        pegawai_terpilih.append(pj_index)
-        pj_key = (
-            self.pegawai[pj_index][5] or "Tidak diketahui",
-            self.pegawai[pj_index][7]
-        )
-
-        for golongan, tarif, jumlah in hasil_item["signature"]:
-            key = (golongan, tarif)
-            wajib = 1 if key == pj_key else 0
-            jumlah_acak = jumlah - wajib
-
-            if jumlah_acak <= 0:
-                continue
-
-            daftar_index = [
-                i for i in kelompok.get(key, [])
-                if i != pj_index
-            ]
-
-            if len(daftar_index) < jumlah_acak:
-                messagebox.showerror(
-                    "Data Tidak Cukup",
-                    f"Pegawai {golongan} dengan tarif {rupiah(tarif)} tidak mencukupi."
-                )
-                return []
-
-            riwayat = load_riwayat_turun(self.periode_id)
-            random.shuffle(daftar_index)
-            daftar_index.sort(
-                key=lambda i: (
-                    riwayat.get(self.pegawai[i][0], {}).get("bulan_ini", 0),
-                    riwayat.get(self.pegawai[i][0], {}).get("total", 0)
-                )
-            )
-
-            pegawai_terpilih.extend(daftar_index[:jumlah_acak])
-
-        return pegawai_terpilih
-
-    def acak_lagi(self):
-
-        if not hasattr(self, "komposisi_aktif") or not self.komposisi_aktif:
-            messagebox.showwarning(
-                "Acak Pegawai",
-                "Belum ada kombinasi yang dipilih. Gunakan Auto Tentukan terlebih dahulu."
-            )
-            return
-
-        # Pastikan dana yang sekarang masih sama dengan target komposisi.
-        try:
-            dana_sekarang = parse_rupiah(self.dana_var.get())
-        except Exception:
-            messagebox.showwarning("Dana Tidak Valid", "Masukkan dana bulanan yang valid terlebih dahulu.")
-            return
-
-        target_komposisi = sum(
-            int(tarif) * int(jumlah)
-            for _gol, tarif, jumlah in self.komposisi_aktif.get("signature", [])
-        )
-
-        if target_komposisi != dana_sekarang:
-            messagebox.showwarning(
-                "Komposisi Tidak Sesuai",
-                "Dana bulanan sudah berubah sehingga komposisi sebelumnya tidak berlaku.\n\n"
-                "Gunakan Auto Tentukan lagi untuk membuat komposisi baru sesuai dana saat ini."
-            )
-            return
-
-        kombinasi = self.acak_pegawai_dari_komposisi(
-            self.komposisi_aktif
-        )
-
-        if not kombinasi:
-            return
-
-        # Acak Lagi cukup mengganti pegawai sesuai komposisi yang sama.
-        # Tidak perlu menampilkan dialog hasil setiap kali ditekan.
-        self.terapkan_kombinasi(
-            kombinasi,
-            self.kombinasi_nomor,
-            tampilkan_info=False
-        )
-
-    def terapkan_kombinasi(self, kombinasi, nomor_kombinasi, tampilkan_info=True):
-        # Simpan ID pegawai
-        
-        self.selected_ids = set(
-            self.pegawai[i][0]
-            for i in kombinasi
-        )
-    
-        self.refresh_selection_table()
-    
-        # Hitung rincian golongan
-        rincian_golongan = {}
-    
-        for i in kombinasi:
-            pegawai_data = self.pegawai[i]
-    
-            golongan = (
-                pegawai_data[5]
-                or "Tidak diketahui"
-            )
-    
-            tarif = pegawai_data[7]
-    
-            if golongan not in rincian_golongan:
-                rincian_golongan[golongan] = {
-                    "jumlah": 0,
-                    "total": 0
-                }
-    
-            rincian_golongan[golongan]["jumlah"] += 1
-            rincian_golongan[golongan]["total"] += tarif
-    
-        total = sum(
-            self.pegawai[i][7]
-            for i in kombinasi
-        )
-    
-        pesan_final = (
-            f"Kegiatan {self.bagian_aktif}\n\n"
-            f"KOMBINASI {nomor_kombinasi} DIPILIH\n"
-            f"────────────────────\n"
-        )
-    
-        for golongan in sorted(
-            rincian_golongan.keys()
-        ):
-            data = rincian_golongan[golongan]
-    
-            pesan_final += (
-                f"Gol {golongan:<6} : "
-                f"{data['jumlah']} orang   "
-                f"{rupiah(data['total'])}\n"
-            )
-    
-        dana_target = parse_rupiah(self.dana_var.get())
-        selisih = dana_target - total
-
-        pesan_final += (
-            f"\n────────────────────\n"
-            f"Total Pegawai : {len(kombinasi)} orang\n"
-            f"Total Dana    : {rupiah(total)}\n"
-        )
-
-        if selisih == 0:
-            pesan_final += "Dana terpenuhi: Rp 0\n"
-        elif selisih > 0:
-            pesan_final += f"Dana belum terpakai: {rupiah(selisih)}\n"
-        else:
-            # Seharusnya tidak terjadi untuk kombinasi hasil Auto Tentukan.
-            pesan_final += f"PERINGATAN: melebihi dana {rupiah(abs(selisih))}\n"
-
-        if tampilkan_info:
-            messagebox.showinfo(
-                "Hasil Penentuan",
-                pesan_final
-            )
+    def terapkan_kombinasi(self, *args, **kwargs):
+        messagebox.showinfo("Fitur Dihapus", "Pemilihan otomatis/acak sudah dihapus. Pilih pegawai secara manual.", parent=self)
 
     # =====================================================
     # Hapus data bagian 
@@ -2468,12 +3256,12 @@ class App(tk.Tk):
                     "Database sedang terkunci. Tutup program/Excel lain yang sedang membuka database, lalu coba lagi."
                 )
             else:
-                messagebox.showerror("Gagal Menghapus", str(e))
+                messagebox.showerror("Gagal Menghapus", "Data tidak dapat dihapus. Silakan coba lagi.")
             return
         except Exception as e:
             if conn:
                 conn.rollback()
-            messagebox.showerror("Gagal Menghapus", str(e))
+            messagebox.showerror("Gagal Menghapus", "Data tidak dapat dihapus. Silakan coba lagi.")
             return
         finally:
             if conn:
@@ -2501,145 +3289,131 @@ class App(tk.Tk):
         messagebox.showinfo("Berhasil", f'"{nama_target}" berhasil dihapus beserta seluruh jadwalnya.')
 
     # =====================================================
-    # AUTO TENTUKAN
+    # TENTUKAN KOMPOSISI TARGET
     # =====================================================
 
-    def auto_tentukan(self):
+    def tentukan_komposisi_target(self):
+        """
+        Menentukan komposisi TARGET JUMLAH TURUN secara otomatis berdasarkan
+        dana bulanan. Tidak memilih nama pegawai.
+        """
         try:
             dana = parse_rupiah(self.dana_var.get())
         except Exception:
-            messagebox.showerror("Dana Tidak Valid", "Masukkan dana bulanan yang valid.")
+            messagebox.showerror(
+                "Dana Tidak Valid",
+                "Masukkan dana bulanan yang valid.",
+                parent=self
+            )
             return
 
         if dana <= 0:
-            messagebox.showwarning("Dana Kosong", "Masukkan dana bulanan terlebih dahulu.")
-            return
-
-        pj_id = self.get_selected_pj_id()
-        if not pj_id:
             messagebox.showwarning(
-                "Penanggung Jawab",
-                "Pilih penanggung jawab sebelum menggunakan Auto Tentukan."
+                "Dana Kosong",
+                "Masukkan dana bulanan terlebih dahulu.",
+                parent=self
             )
             return
 
-        self.penanggung_jawab_id = pj_id
-        pj = next((p for p in self.pegawai if p[0] == pj_id), None)
-        if not pj:
-            messagebox.showerror("Data Pegawai", "Data penanggung jawab tidak ditemukan.")
-            return
+        # Kelompokkan berdasarkan TARIF, bukan nama golongan.
+        # Jika beberapa golongan mempunyai tarif yang sama (mis. Gol II dan X
+        # sama-sama Rp75.000), keduanya menjadi satu kelompok target.
+        # Saat pegawai Gol II maupun Gol X dipilih di kalender, keduanya tetap
+        # dihitung ke target kelompok tarif yang sama.
+        tarif_to_golongan = {}
+        for p in self.pegawai:
+            gol = str(p[5] or "").strip() or "Tidak diketahui"
+            tarif = int(p[7] or 0)
+            if tarif > 0:
+                tarif_to_golongan.setdefault(tarif, set()).add(gol)
 
-        tarif_pj = pj[7]
-        sisa_dana = dana - tarif_pj
+        tarif_groups = []
+        for tarif in sorted(tarif_to_golongan):
+            golongan = sorted(tarif_to_golongan[tarif])
+            if len(golongan) == 1:
+                label = golongan[0]
+            else:
+                label = f"{golongan[0]} (atau {' / '.join(golongan[1:])})"
+            tarif_groups.append((label, tarif))
 
-        if sisa_dana < 0:
+        if not tarif_groups:
             messagebox.showwarning(
-                "Dana Tidak Cukup",
-                f"Tarif penanggung jawab {rupiah(tarif_pj)} lebih besar dari dana {rupiah(dana)}."
+                "Tarif Tidak Tersedia",
+                "Belum ada tarif pegawai yang dapat digunakan untuk menghitung komposisi.",
+                parent=self
             )
             return
 
-        # Cari kombinasi pegawai lain untuk sisa dana, tanpa PJ.
-        kandidat = [p for p in self.pegawai if p[0] != pj_id]
-        if sisa_dana == 0:
-            hasil = [{
-                "nomor": 1,
-                "signature": [(pj[5] or "Tidak diketahui", pj[7], 1)]
-            }]
-        else:
-            # Ambil seluruh komposisi yang bisa dibentuk, bukan hanya 5.
-            hasil_lain = cari_beberapa_kombinasi(
-                kandidat,
-                sisa_dana,
-                max_hasil=None
-            )
-            hasil = []
-            pj_key = (pj[5] or "Tidak diketahui", pj[7])
-            for item in hasil_lain:
-                signature = list(item["signature"])
-                # Tambahkan PJ ke kelompok golongan/tarif yang sama.
-                found = False
-                for n, (gol, tarif, jumlah) in enumerate(signature):
-                    if (gol, tarif) == pj_key:
-                        signature[n] = (gol, tarif, jumlah + 1)
-                        found = True
-                        break
-                if not found:
-                    signature.append((pj_key[0], pj_key[1], 1))
-                signature.sort(key=lambda x: (x[0], x[1]))
-                hasil.append({
-                    "nomor": len(hasil) + 1,
-                    "signature": signature
-                })
+        hasil = cari_komposisi_turun(tarif_groups, dana, max_hasil=60)
 
         if not hasil:
-            bawah, atas = cari_saran_dana_terdekat(kandidat, sisa_dana)
-
-            kandidat_saran = []
-            if bawah is not None:
-                kandidat_saran.append((bawah + tarif_pj, abs(dana - (bawah + tarif_pj))))
-            if atas is not None:
-                kandidat_saran.append((atas + tarif_pj, abs(dana - (atas + tarif_pj))))
-
-            kandidat_saran = sorted(set(kandidat_saran), key=lambda x: (x[1], x[0]))
-            pesan_saran = (
-                f"Tidak ditemukan kombinasi pegawai yang tepat untuk dana {rupiah(dana)}.\n\n"
-                f"Dana yang harus dipenuhi setelah PJ: {rupiah(sisa_dana)}.\n"
+            bawah, atas = cari_saran_dana_terdekat(
+                [(None, None, None, None, None, gol, None, tarif) for gol, tarif in tarif_groups],
+                dana
             )
-
-            if kandidat_saran:
-                pesan_saran += "\nSaran dana terdekat:"
-                for total_saran, selisih in kandidat_saran[:2]:
-                    arah = "lebih rendah" if total_saran < dana else "lebih tinggi" if total_saran > dana else "sama"
-                    pesan_saran += (
-                        f"\n• {rupiah(total_saran)} ({arah}, selisih {rupiah(selisih)})"
-                    )
-            else:
-                pesan_saran += "\nBelum ada kombinasi dana yang dapat dibentuk dari pegawai yang tersedia."
-
-            messagebox.showwarning(
-                "Tidak Ada Kombinasi",
-                pesan_saran
+            pesan = (
+                f"Tidak ditemukan komposisi TURUN yang tepat untuk dana {rupiah(dana)}.\n\n"
+                "Sistem mencari berdasarkan tarif yang tersedia pada Data Pegawai."
             )
+            if bawah is not None or atas is not None:
+                pesan += "\n\nSaran dana terdekat:"
+                if bawah is not None:
+                    pesan += f"\n• Di bawah: {rupiah(bawah)}"
+                if atas is not None:
+                    pesan += f"\n• Di atas: {rupiah(atas)}"
+            messagebox.showwarning("Tidak Ada Komposisi", pesan, parent=self)
             return
 
-        nama_pj = pj[1]
-        pesan = (
-            f"Kegiatan {self.bagian_aktif}\n"
-            f"Dana: {rupiah(dana)}\n"
-            f"PJ wajib: {nama_pj} ({rupiah(tarif_pj)})\n\n"
-            f"ALTERNATIF KOMBINASI\n"
-            f"────────────────────\n"
-        )
-
-        for item in hasil:
-            pesan += f"\nKombinasi {item['nomor']}\n"
-            rincian = {}
-            for golongan, tarif, jumlah in item["signature"]:
-                rincian.setdefault(golongan, {"jumlah": 0, "total": 0})
-                rincian[golongan]["jumlah"] += jumlah
-                rincian[golongan]["total"] += jumlah * tarif
-            for golongan in sorted(rincian):
-                data = rincian[golongan]
-                pesan += f"Gol {golongan:<6}: {data['jumlah']} orang   {rupiah(data['total'])}\n"
-            pesan += f"Total       : {sum(x['jumlah'] for x in rincian.values())} orang\n"
-
-        pilihan = self.pilih_kombinasi_dialog(hasil, dana, nama_pj)
-
+        pilihan = self.pilih_kombinasi_dialog(hasil, dana)
         if pilihan is None:
             return
 
-        self.komposisi_aktif = hasil[pilihan - 1]
+        komposisi = hasil[pilihan - 1]
+        target = {}
+        target_tarif = {}
+        for golongan, tarif, jumlah in komposisi["signature"]:
+            target[golongan] = target.get(golongan, 0) + int(jumlah)
+            target_tarif[golongan] = int(tarif)
+
+        self.komposisi_target = target
+        self.komposisi_target_tarif = target_tarif
+        self.komposisi_aktif = komposisi
         self.kombinasi_nomor = pilihan
 
-        kombinasi = self.acak_pegawai_dari_komposisi(self.komposisi_aktif)
-        if not kombinasi:
-            return
+        if getattr(self, "bagian_id", None):
+            conn = get_connection()
+            try:
+                conn.execute(
+                    "UPDATE bagian SET komposisi_target = ?, penanggung_jawab_id = COALESCE(penanggung_jawab_id, penanggung_jawab_id) WHERE id = ?",
+                    (json.dumps({
+                        "target": target,
+                        "tarif": target_tarif
+                    }, ensure_ascii=False), self.bagian_id)
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
-        if hasattr(self, "btn_acak_lagi"):
-            self.btn_acak_lagi.config(state="normal")
+        self.refresh_komposisi_manual()
+        self.update_calendar_summary()
 
-        self.terapkan_kombinasi(kombinasi, pilihan)
+        rincian = "\n".join(
+            f"Gol {gol}: {jumlah} turun × {rupiah(target_tarif.get(gol, 0))} = {rupiah(int(jumlah) * int(target_tarif.get(gol, 0)))}"
+            for gol, jumlah in sorted(target.items())
+        )
+        messagebox.showinfo(
+            "Komposisi Target Berhasil",
+            f"Dana bulanan: {rupiah(dana)}\n\n"
+            f"{rincian}\n\n"
+            f"TOTAL TARGET: {rupiah(komposisi['total'])}\n"
+            f"TOTAL TURUN: {komposisi['jumlah_turun']} kali\n\n"
+            "Nama pegawai tidak dipilih otomatis. Pegawai tetap dipilih manual pada kalender.",
+            parent=self
+        )
+
+    def auto_tentukan(self):
+        """Kompatibilitas nama lama; sekarang menentukan komposisi target tanpa memilih nama."""
+        return self.tentukan_komposisi_target()
 
     # =====================================================
     # KALENDER
@@ -2694,233 +3468,522 @@ class App(tk.Tk):
             text=f"  Data {nama}  "
         )
 
+    def update_calendar_summary(self):
+        """Menampilkan rincian target TURUN dan realisasi bulanan."""
+        if not hasattr(self, "calendar_summary"):
+            return
+
+        conn = get_connection()
+        try:
+            rows = conn.execute("""
+                SELECT p.tarif, COUNT(*), COALESCE(SUM(p.tarif),0)
+                FROM jadwal j JOIN pegawai p ON p.id=j.pegawai_id
+                WHERE j.periode_id=? AND j.bagian_id=?
+                GROUP BY p.tarif
+            """, (self.periode_id, self.bagian_id)).fetchall()
+            total_uang = conn.execute("""
+                SELECT COALESCE(SUM(p.tarif),0)
+                FROM jadwal j JOIN pegawai p ON p.id=j.pegawai_id
+                WHERE j.periode_id=? AND j.bagian_id=?
+            """, (self.periode_id, self.bagian_id)).fetchone()[0]
+            desa_rows = conn.execute("""
+                SELECT j.hari, COALESCE(d.nama, 'Belum dipilih')
+                FROM jadwal j LEFT JOIN desa d ON d.id=j.desa_id
+                WHERE j.periode_id=? AND j.bagian_id=?
+                GROUP BY j.hari, d.nama ORDER BY j.hari
+            """, (self.periode_id, self.bagian_id)).fetchall()
+        finally:
+            conn.close()
+
+        actual = {int(tarif or 0): (int(n), int(uang or 0)) for tarif,n,uang in rows}
+        target = getattr(self, "komposisi_target", {}) or {}
+        target_tarif = getattr(self, "komposisi_target_tarif", {}) or {}
+
+        # Jika data lama hanya menyimpan target angka, ambil tarif dari master.
+        if target and not target_tarif:
+            for p in self.pegawai:
+                gol = str(p[5] or "").strip() or "Tidak diketahui"
+                if gol in target:
+                    target_tarif.setdefault(gol, int(p[7] or 0))
+
+        lines = []
+        if target:
+            lines.append("KOMPOSISI TARGET (JUMLAH TURUN):")
+            total_target_uang = 0
+            total_target_turun = 0
+            for g, n in sorted(target.items()):
+                n = int(n)
+                tarif = int(target_tarif.get(g, 0))
+                subtotal = n * tarif
+                got, uang = actual.get(tarif, (0, 0))
+                sisa = max(0, n - got)
+                total_target_turun += n
+                total_target_uang += subtotal
+
+                if got < n:
+                    status = f"kurang {sisa} turun"
+                elif got > n:
+                    status = f"lebih {got-n} turun"
+                else:
+                    status = "terpenuhi"
+
+                lines.append(
+                    f"Gol {g}: {n} turun × {rupiah(tarif)} = {rupiah(subtotal)}"
+                    f"   |   Realisasi {got} turun   |   {status}"
+                )
+
+            lines.append(
+                f"TOTAL TARGET: {total_target_turun} turun × rata-rata sesuai tarif"
+                f" = {rupiah(total_target_uang)}"
+            )
+        else:
+            lines.append("Komposisi target belum ditentukan.")
+
+        lines.append(
+            f"TOTAL REALISASI: {sum(v[0] for v in actual.values())} turun"
+            f"  •  TOTAL UANG REALISASI: {rupiah(total_uang)}"
+        )
+
+        if desa_rows:
+            lines.append(
+                "DESA: " + "  •  ".join(f"Tgl {h}: {d}" for h,d in desa_rows)
+            )
+
+        self.calendar_summary.config(text="\n".join(lines))
+
+    def peringatan_komposisi_tanggal(self, hari):
+        """Menghitung sisa target bulanan setelah tanggal yang sedang dipilih."""
+        target = getattr(self, "komposisi_target", {}) or {}
+        if not target or not self.bagian_id:
+            return ""
+
+        conn = get_connection()
+        try:
+            rows = conn.execute("""
+                SELECT p.tarif, COUNT(*)
+                FROM jadwal j JOIN pegawai p ON p.id=j.pegawai_id
+                WHERE j.periode_id=? AND j.bagian_id=?
+                GROUP BY p.tarif
+            """, (self.periode_id, self.bagian_id)).fetchall()
+        finally:
+            conn.close()
+
+        actual = {int(tarif or 0): int(n) for tarif,n in rows}
+        target_tarif = getattr(self, "komposisi_target_tarif", {}) or {}
+        messages = []
+        for g, n in sorted(target.items()):
+            tarif = int(target_tarif.get(g, 0))
+            got = actual.get(tarif, 0)
+            if got < int(n):
+                messages.append(
+                    f"Gol {g}: masih kurang {int(n)-got} turun ({got}/{int(n)})"
+                )
+            elif got > int(n):
+                messages.append(
+                    f"Gol {g}: melebihi target {got-int(n)} turun ({got}/{int(n)})"
+                )
+        return " • ".join(messages)
+
     def load_kalender(self):
-        """Menampilkan kalender untuk kegiatan aktif; hanya pegawai yang dipilih pada kegiatan ini."""
+        """Kalender kegiatan dengan target komposisi, desa per tanggal, dan total biaya."""
         for widget in self.calendar_frame.winfo_children():
             widget.destroy()
-
         bulan = NAMA_BULAN.index(self.bulan_var.get())
         tahun = int(self.tahun_var.get())
         jumlah_hari = calendar.monthrange(tahun, bulan)[1]
         hari_libur = load_hari_libur(self.periode_id)
 
-        # Ambil semua kegiatan pada periode aktif dan buat warna yang konsisten.
         conn = get_connection()
-        kegiatan_rows = conn.execute(
-            """
-            SELECT kode, COALESCE(nama_bagian, ''), COALESCE(kegiatan, '')
-            FROM bagian
-            WHERE periode_id = ?
-            ORDER BY id
-            """,
-            (self.periode_id,)
-        ).fetchall()
-
-        jadwal_rows = conn.execute(
-            """
-            SELECT j.pegawai_id, j.hari, b.kode, COALESCE(b.nama_bagian, ''), COALESCE(b.kegiatan, '')
-            FROM jadwal j
-            JOIN bagian b ON b.id = j.bagian_id
-            WHERE j.periode_id = ?
-            """,
-            (self.periode_id,)
-        ).fetchall()
+        kegiatan_rows = conn.execute("SELECT kode, COALESCE(nama_bagian,''), COALESCE(kegiatan,'') FROM bagian WHERE periode_id=? ORDER BY id", (self.periode_id,)).fetchall()
+        jadwal_rows = conn.execute("""
+            SELECT j.pegawai_id,j.hari,b.kode,COALESCE(b.nama_bagian,''),COALESCE(b.kegiatan,''),j.desa_id,COALESCE(d.nama,'')
+            FROM jadwal j JOIN bagian b ON b.id=j.bagian_id LEFT JOIN desa d ON d.id=j.desa_id
+            WHERE j.periode_id=?
+        """, (self.periode_id,)).fetchall()
         conn.close()
+        palette=["#B8D4EF","#C7E6C5","#F3D6A5","#D9C2E9","#F4B8B8","#BFE3E3","#E7D6A8","#C9D7B8"]
+        self.calendar_colors={r[0]:palette[i%len(palette)] for i,r in enumerate(kegiatan_rows)}
+        jadwal_map={(r[0],r[1]):{"kode":r[2],"nama":(r[3] or '').strip() or f"Kegiatan {r[2]}","desa_id":r[5],"desa":r[6]} for r in jadwal_rows}
 
-        palette = [
-            "#B8D4EF", "#C7E6C5", "#F3D6A5", "#D9C2E9",
-            "#F4B8B8", "#BFE3E3", "#E7D6A8", "#C9D7B8",
-            "#D5C4A1", "#C7D4F2", "#E5C1CD", "#CDE4C8"
-        ]
-        self.calendar_colors = {
-            row[0]: palette[i % len(palette)]
-            for i, row in enumerate(kegiatan_rows)
-        }
-        self.calendar_activity_names = {}
-        for kode, nama, deskripsi in kegiatan_rows:
-            nama_tampil = (nama or '').strip() or f"Kegiatan {kode}"
-            self.calendar_activity_names[kode] = nama_tampil
+        self.info_kalender.config(text=f"Pegawai kegiatan {self.bagian_aktif} • {NAMA_BULAN[bulan]} {tahun}")
+        self.info_libur.config(text=f"Libur manual: {', '.join(map(str,sorted(hari_libur))) if hari_libur else 'tidak ada'} • Minggu selalu libur")
+        for w in self.legend_kegiatan.winfo_children(): w.destroy()
+        tk.Label(self.legend_kegiatan,text="Keterangan kegiatan:",bg=UI_BG,font=("Segoe UI",9,"bold")).pack(side="left",padx=(0,8))
+        for kode,nama,_ in kegiatan_rows:
+            tk.Label(self.legend_kegiatan,text=f"{kode} = {(nama or '').strip() or f'Kegiatan {kode}'}",bg=self.calendar_colors[kode],relief="solid",bd=1,padx=8,pady=3,font=("Segoe UI",9,"bold")).pack(side="left",padx=3)
 
-        jadwal_map = {
-            (row[0], row[1]): {
-                "kode": row[2],
-                "nama": (row[3] or '').strip() or f"Kegiatan {row[2]}",
-                "deskripsi": (row[4] or '').strip(),
-            }
-            for row in jadwal_rows
-        }
+        ttk.Label(self.calendar_frame,text="No.",font=("Segoe UI",9,"bold"),anchor="center").grid(row=0,column=0,rowspan=2,sticky="nsew",padx=1,pady=1)
+        ttk.Label(self.calendar_frame,text="Nama Pegawai",font=("Segoe UI",9,"bold"),anchor="center").grid(row=0,column=1,rowspan=2,sticky="nsew",padx=1,pady=1)
+        nama_hari=["Sen","Sel","Rab","Kam","Jum","Sab","Min"]
+        for hari in range(1,jumlah_hari+1):
+            tanggal=datetime(tahun,bulan,hari); nonkerja=tanggal.weekday()==6 or hari in hari_libur
+            ttk.Label(self.calendar_frame,text=str(hari),font=("Segoe UI",9,"bold"),anchor="center",style="Holiday.TLabel" if nonkerja else "TLabel").grid(row=0,column=hari+1,sticky="nsew",padx=1,pady=(1,0))
+            ttk.Label(self.calendar_frame,text="LIBUR" if nonkerja else nama_hari[tanggal.weekday()],font=("Segoe UI",7 if nonkerja else 8,"bold" if nonkerja else "normal"),anchor="center",style="Holiday.TLabel" if nonkerja else "TLabel").grid(row=1,column=hari+1,sticky="nsew",padx=1,pady=(0,1))
 
-        if hasattr(self, "info_kalender"):
-            self.info_kalender.config(
-                text=(
-                    f"Pegawai terpilih pada kegiatan ini • {NAMA_BULAN[bulan]} {tahun}  •  "
-                    f"Kegiatan aktif: {self.bagian_aktif}"
-                )
-            )
-
-        if hasattr(self, "info_libur"):
-            if hari_libur:
-                self.info_libur.config(
-                    text=f"Libur manual: {', '.join(str(x) for x in sorted(hari_libur))}  •  Minggu selalu libur"
-                )
-            else:
-                self.info_libur.config(
-                    text="Libur manual: tidak ada  •  Minggu selalu libur"
-                )
-
-        # Legenda kode kegiatan + warna.
-        if hasattr(self, "legend_kegiatan"):
-            for widget in self.legend_kegiatan.winfo_children():
-                widget.destroy()
-
-            tk.Label(
-                self.legend_kegiatan,
-                text="Keterangan kegiatan:",
-                bg="#F4F6F8",
-                font=("Segoe UI", 9, "bold")
-            ).pack(side="left", padx=(0, 8))
-
-            for kode, nama, deskripsi in kegiatan_rows:
-                warna = self.calendar_colors.get(kode, "#DDE7F0")
-                label = tk.Label(
-                    self.legend_kegiatan,
-                    text=f"{kode} = {(nama or '').strip() or f'Kegiatan {kode}'}",
-                    bg=warna,
-                    relief="solid",
-                    bd=1,
-                    padx=8,
-                    pady=3,
-                    font=("Segoe UI", 9, "bold")
-                )
-                label.pack(side="left", padx=3)
-
-        nama_hari = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
-
-        ttk.Label(
-            self.calendar_frame,
-            text="Nama Pegawai",
-            font=("Segoe UI", 9, "bold"),
-            anchor="center"
-        ).grid(row=0, column=0, rowspan=2, sticky="nsew", padx=1, pady=1)
-
-        for hari in range(1, jumlah_hari + 1):
-            tanggal = datetime(tahun, bulan, hari)
-            index_hari = tanggal.weekday()
-            nonkerja = index_hari == 6 or hari in hari_libur
-
-            label_tanggal = ttk.Label(
-                self.calendar_frame,
-                text=str(hari),
-                font=("Segoe UI", 9, "bold"),
-                anchor="center"
-            )
-            label_tanggal.grid(row=0, column=hari, sticky="nsew", padx=1, pady=(1, 0))
-
-            label_hari = ttk.Label(
-                self.calendar_frame,
-                text=("LIBUR" if nonkerja else nama_hari[index_hari]),
-                font=("Segoe UI", 7 if nonkerja else 8, "bold" if nonkerja else "normal"),
-                anchor="center"
-            )
-            label_hari.grid(row=1, column=hari, sticky="nsew", padx=1, pady=(0, 1))
-
-            if nonkerja:
-                label_tanggal.configure(style="Holiday.TLabel")
-                label_hari.configure(style="Holiday.TLabel")
-
-        # Kalender kegiatan hanya menampilkan pegawai yang dicentang/terdaftar
-        # pada kegiatan yang sedang aktif. Kalender keseluruhan memakai semua pegawai.
-        conn = get_connection()
-        anggota_rows = conn.execute(
-            "SELECT pegawai_id FROM anggota_bagian WHERE bagian_id = ?",
-            (self.bagian_id,)
-        ).fetchall() if self.bagian_id else []
-        conn.close()
-        anggota_ids = {row[0] for row in anggota_rows}
-        semua_pegawai = sorted(
-            [p for p in self.pegawai if p[0] in anggota_ids],
-            key=lambda p: str(p[1] or '').lower()
-        )
-
+        conn=get_connection(); anggota_rows=conn.execute("SELECT pegawai_id FROM anggota_bagian WHERE bagian_id=?",(self.bagian_id,)).fetchall() if self.bagian_id else []; conn.close()
+        anggota_ids={r[0] for r in anggota_rows}
+        semua_pegawai=sorted([p for p in self.pegawai if p[0] in anggota_ids],key=lambda p:str(p[1] or '').lower())
         if not semua_pegawai:
-            ttk.Label(
-                self.calendar_frame,
-                text="Belum ada pegawai yang dipilih untuk kegiatan ini.",
-                font=("Segoe UI", 10)
-            ).grid(row=2, column=0, columnspan=jumlah_hari + 1, pady=20)
+            ttk.Label(self.calendar_frame,text="Belum ada pegawai yang dipilih untuk kegiatan ini.",font=("Segoe UI",10)).grid(row=2,column=0,columnspan=jumlah_hari+2,pady=20)
+        else:
+            for nomor,rowdata in enumerate(semua_pegawai,start=1):
+                row = nomor + 1
+                p = rowdata
+                pid=p[0]; nama=p[1] or "Tanpa Nama"
+                ttk.Label(self.calendar_frame,text=str(nomor),anchor="center",padding=(2,0)).grid(row=row,column=0,sticky="nsew",padx=1,pady=1)
+                ttk.Label(self.calendar_frame,text=nama,anchor="w",padding=(5,0)).grid(row=row,column=1,sticky="nsew",padx=1,pady=1)
+                for hari in range(1,jumlah_hari+1):
+                    tanggal=datetime(tahun,bulan,hari); nonkerja=tanggal.weekday()==6 or hari in hari_libur; detail=jadwal_map.get((pid,hari))
+                    if nonkerja:
+                        cell=tk.Button(self.calendar_frame,text="LIBUR",width=8,state="disabled",disabledforeground="#888888",bg="#F1F3F5",relief="solid",bd=1)
+                    else:
+                        kode=detail["kode"] if detail else ""; desa=detail["desa"] if detail else ""; text=kode + (f"\n{desa}" if desa else "")
+                        cell=tk.Button(self.calendar_frame,text=text,width=10,height=2,bg=self.calendar_colors.get(kode,"#FFFFFF") if detail else "#FFFFFF",relief="solid",bd=1,font=("Segoe UI",8,"bold") if kode else ("Segoe UI",8),command=lambda pid=pid,h=hari:self.toggle_jadwal(pid,h))
+                    if detail:
+                        def show_cell_detail(event, n=nama, h=hari, d=detail):
+                            warning = self.peringatan_komposisi_tanggal(h)
+                            text = f"{n} • Tanggal {h} • {d['kode']} • Desa: {d['desa'] or 'Belum dipilih'}"
+                            if warning:
+                                text += f" • ⚠ {warning}"
+                            self.calendar_detail.config(text=text)
+                        cell.bind("<Enter>", show_cell_detail)
+                    cell.grid(row=row,column=hari+1,sticky="nsew",padx=1,pady=1)
+        self.calendar_frame.grid_columnconfigure(0,minsize=220)
+        for col in range(2,jumlah_hari+2): self.calendar_frame.grid_columnconfigure(col,minsize=72)
+        # Scroll region mengikuti SELURUH halaman kalender: header, legenda
+        # kegiatan A-Z, ringkasan, dan tabel. Dengan demikian user dapat
+        # menggeser halaman kiri/kanan maupun atas/bawah tanpa kehilangan
+        # bagian atas yang berisi legenda.
+        try:
+            self.calendar_frame.update_idletasks()
+            if hasattr(self, "_update_jadwal_page_region"):
+                self._update_jadwal_page_region()
+            self.jadwal_page_canvas.after_idle(self._update_jadwal_page_region)
+        except Exception:
+            bbox = self.jadwal_page_canvas.bbox("all")
+            if bbox:
+                self.jadwal_page_canvas.configure(scrollregion=bbox)
+        self.jadwal_page_canvas.after_idle(lambda: self._force_canvas_scrollregion(self.jadwal_page_canvas))
+        self.update_calendar_summary()
+        self.load_kalender_keseluruhan()
+
+    def pilih_penugasan_keseluruhan(self, pegawai_id, hari):
+        """Menambahkan penugasan langsung dari Kalender Keseluruhan."""
+        # Tampilkan spinner SEBELUM query dan pembuatan popup supaya user
+        # langsung mendapat umpan balik bahwa klik sedang diproses.
+        self.show_loading("Menyiapkan pilihan penugasan...", parent=self.overall_calendar_window)
+        self.update_idletasks()
+
+        bulan = NAMA_BULAN.index(self.bulan_var.get())
+        tahun = int(self.tahun_var.get())
+        if datetime(tahun, bulan, hari).weekday() == 6 or hari in load_hari_libur(self.periode_id):
+            self.hide_loading()
             return
 
-        def show_detail(pegawai_nama, hari, detail):
-            if not hasattr(self, "calendar_detail"):
+        conn = get_connection()
+        try:
+            existing = conn.execute(
+                "SELECT b.kode, COALESCE(b.nama_bagian,''), COALESCE(d.nama,'') "
+                "FROM jadwal j JOIN bagian b ON b.id=j.bagian_id "
+                "LEFT JOIN desa d ON d.id=j.desa_id "
+                "WHERE j.periode_id=? AND j.pegawai_id=? AND j.hari=?",
+                (self.periode_id, pegawai_id, hari)
+            ).fetchone()
+            if existing:
+                messagebox.showinfo(
+                    "Penugasan Sudah Ada",
+                    f"Pegawai ini sudah memiliki penugasan pada tanggal {hari}:\n"
+                    f"{existing[0]} — {existing[1] or ('Kegiatan ' + existing[0])}\n"
+                    f"Desa: {existing[2] or '-'}",
+                    parent=self.overall_calendar_window
+                )
+                self.hide_loading()
                 return
-            if detail:
-                self.calendar_detail.config(
-                    text=f"{pegawai_nama} • Tanggal {hari} • {detail['kode']} — {detail['nama']}"
-                )
+
+            kegiatan_rows = conn.execute(
+                "SELECT id, kode, COALESCE(nama_bagian,''), penanggung_jawab_id "
+                "FROM bagian WHERE periode_id=? ORDER BY id",
+                (self.periode_id,)
+            ).fetchall()
+            desa_rows = load_desa_aktif()
+        finally:
+            conn.close()
+
+        if not kegiatan_rows:
+            self.hide_loading()
+            messagebox.showwarning("Kegiatan", "Belum ada kegiatan pada periode ini.", parent=self.overall_calendar_window)
+            return
+        if not desa_rows:
+            self.hide_loading()
+            messagebox.showwarning("Data Desa", "Belum ada desa aktif. Tambahkan desa terlebih dahulu.", parent=self.overall_calendar_window)
+            return
+
+        # Query selesai; tutup spinner tepat sebelum popup tampil.
+        self.hide_loading()
+        win = tk.Toplevel(self.overall_calendar_window)
+        self.enable_native_window_controls(win)
+        win.title(f"Tambah Penugasan — Tanggal {hari}")
+        win.geometry("600x360")
+        win.minsize(560, 340)
+        win.transient(self.overall_calendar_window)
+        self.enable_native_window_controls(win)
+        win.grab_set()
+        self.enable_native_window_controls(win)
+
+        win.configure(bg=UI_BG)
+        tk.Label(
+            win, text=f"Penugasan tanggal {hari}",
+            bg=UI_BG, fg=UI_TEXT, font=("Segoe UI Semibold", 16)
+        ).pack(anchor="w", padx=24, pady=(22, 4))
+        tk.Label(
+            win,
+            text="Pilih kegiatan dan desa. Penanggung Jawab kegiatan akan otomatis ikut turun.",
+            bg=UI_BG, fg=UI_MUTED, font=("Segoe UI", 9)
+        ).pack(anchor="w", padx=24, pady=(0, 16))
+
+        form = tk.Frame(win, bg=UI_PANEL, highlightbackground=UI_BORDER, highlightthickness=1)
+        form.pack(fill="x", padx=24, pady=(0, 6))
+        form.columnconfigure(1, weight=1)
+
+        tk.Label(form, text="Kegiatan:").grid(row=0, column=0, sticky="w", pady=7)
+        kegiatan_var = tk.StringVar()
+        kegiatan_values = [
+            f"{r[1]} — {(r[2] or '').strip() or ('Kegiatan ' + r[1])}" + ("" if r[3] else "  • PJ belum ditentukan")
+            for r in kegiatan_rows
+        ]
+        kegiatan_combo = ttk.Combobox(form, textvariable=kegiatan_var, values=kegiatan_values, state="readonly")
+        kegiatan_combo.grid(row=0, column=1, sticky="ew", padx=(12, 0), pady=7)
+        kegiatan_combo.current(0)
+
+        tk.Label(form, text="Desa:").grid(row=1, column=0, sticky="w", pady=7)
+        desa_var = tk.StringVar()
+        desa_combo = ttk.Combobox(form, textvariable=desa_var, values=[r[1] for r in desa_rows], state="readonly")
+        desa_combo.grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=7)
+        desa_combo.current(0)
+
+        info = tk.Label(
+            win, text="", bg=UI_BG, fg=UI_MUTED,
+            justify="left", anchor="w", font=("Segoe UI", 9)
+        )
+        info.pack(fill="x", padx=24, pady=(8, 0))
+
+        def update_desa_default(*_):
+            idx = kegiatan_combo.current()
+            if idx < 0:
+                return
+            bagian_id = kegiatan_rows[idx][0]
+            conn2 = get_connection()
+            try:
+                row = conn2.execute(
+                    "SELECT d.id, d.nama FROM jadwal j JOIN desa d ON d.id=j.desa_id "
+                    "WHERE j.periode_id=? AND j.bagian_id=? AND j.hari=? LIMIT 1",
+                    (self.periode_id, bagian_id, hari)
+                ).fetchone()
+            finally:
+                conn2.close()
+            if row and row[1] in [x[1] for x in desa_rows]:
+                desa_var.set(row[1])
+                info.config(text=f"Kegiatan ini sudah memakai {row[1]} pada tanggal {hari}; desa disamakan otomatis.")
             else:
-                self.calendar_detail.config(
-                    text=f"{pegawai_nama} • Tanggal {hari} • Belum ada penugasan"
+                if not desa_var.get():
+                    desa_combo.current(0)
+                info.config(text="")
+
+        kegiatan_combo.bind("<<ComboboxSelected>>", update_desa_default)
+        update_desa_default()
+
+        result = {"saved": False}
+        bottom = tk.Frame(win, bg=UI_BG)
+        bottom.pack(fill="x", padx=24, pady=(14, 22))
+
+        def batal():
+            win.destroy()
+
+        def simpan():
+            idx = kegiatan_combo.current()
+            desa_nama = desa_var.get().strip()
+            if idx < 0 or not desa_nama:
+                messagebox.showwarning("Penugasan", "Pilih kegiatan dan desa terlebih dahulu.", parent=win)
+                return
+            bagian_id, kode, nama_bagian, pj_id = kegiatan_rows[idx]
+            if not pj_id:
+                nama_tampil = (nama_bagian or '').strip() or f"Kegiatan {kode}"
+                messagebox.showwarning(
+                    "Penanggung Jawab Belum Ditentukan",
+                    f"{kode} — {nama_tampil} belum memiliki Penanggung Jawab.\n\n"
+                    "Tentukan PJ terlebih dahulu pada Pengaturan Kegiatan sebelum membuat penugasan.",
+                    parent=win
                 )
+                return
+            desa_row = next((r for r in desa_rows if r[1] == desa_nama), None)
+            if not desa_row:
+                return
+            desa_id = desa_row[0]
 
-        for row, pegawai in enumerate(semua_pegawai, start=2):
-            pegawai_id = pegawai[0]
-            nama = pegawai[1] or "Tanpa Nama"
-
-            ttk.Label(
-                self.calendar_frame,
-                text=nama,
-                anchor="w",
-                padding=(5, 0)
-            ).grid(row=row, column=0, sticky="nsew", padx=1, pady=1)
-
-            for hari in range(1, jumlah_hari + 1):
-                index_hari = calendar.weekday(tahun, bulan, hari)
-                nonkerja = index_hari == 6 or hari in hari_libur
-                detail = jadwal_map.get((pegawai_id, hari))
-
-                if nonkerja:
-                    tombol = tk.Button(
-                        self.calendar_frame,
-                        text="LIBUR",
-                        width=6,
-                        height=1,
-                        relief="solid",
-                        borderwidth=1,
-                        state="disabled",
-                        disabledforeground="#888888",
-                        bg="#ECECEC"
+            conn2 = get_connection()
+            try:
+                # Satu desa tidak boleh dipakai dua kegiatan pada tanggal yang sama.
+                konflik_desa = conn2.execute(
+                    "SELECT b.kode, COALESCE(b.nama_bagian,'') FROM jadwal j "
+                    "JOIN bagian b ON b.id=j.bagian_id WHERE j.periode_id=? AND j.hari=? "
+                    "AND j.desa_id=? AND j.bagian_id<>? LIMIT 1",
+                    (self.periode_id, hari, desa_id, bagian_id)
+                ).fetchone()
+                if konflik_desa:
+                    messagebox.showwarning(
+                        "Desa Bentrok",
+                        f"{desa_nama} sudah digunakan oleh Kegiatan {konflik_desa[0]} — "
+                        f"{konflik_desa[1] or ('Kegiatan ' + konflik_desa[0])} pada tanggal {hari}.",
+                        parent=win
                     )
-                else:
-                    kode = detail["kode"] if detail else ""
-                    warna = self.calendar_colors.get(kode, "#FFFFFF") if detail else "#FFFFFF"
-                    tombol = tk.Button(
-                        self.calendar_frame,
-                        text=kode,
-                        width=6,
-                        height=1,
-                        relief="solid",
-                        borderwidth=1,
-                        bg=warna,
-                        activebackground=warna,
-                        font=("Segoe UI", 9, "bold") if kode else ("Segoe UI", 9),
-                        command=lambda pid=pegawai_id, h=hari: self.toggle_jadwal(pid, h)
+                    return
+
+                # PJ juga harus bebas pada tanggal tersebut karena setiap pegawai hanya boleh satu kegiatan/hari.
+                if pj_id and int(pj_id) != int(pegawai_id):
+                    pj_conflict = conn2.execute(
+                        "SELECT b.kode, COALESCE(b.nama_bagian,'') FROM jadwal j "
+                        "JOIN bagian b ON b.id=j.bagian_id WHERE j.periode_id=? AND j.pegawai_id=? "
+                        "AND j.hari=? AND j.bagian_id<>? LIMIT 1",
+                        (self.periode_id, pj_id, hari, bagian_id)
+                    ).fetchone()
+                    if pj_conflict:
+                        messagebox.showwarning(
+                            "PJ Bentrok",
+                            f"PJ untuk Kegiatan {kode} sudah bertugas pada Kegiatan {pj_conflict[0]} "
+                            f"pada tanggal {hari}. Penugasan dari Kalender Keseluruhan dibatalkan.",
+                            parent=win
+                        )
+                        return
+
+                conn2.execute(
+                    "INSERT INTO jadwal (periode_id, bagian_id, pegawai_id, hari, desa_id) VALUES (?, ?, ?, ?, ?)",
+                    (self.periode_id, bagian_id, pegawai_id, hari, desa_id)
+                )
+                if pj_id and int(pj_id) != int(pegawai_id):
+                    pj_existing = conn2.execute(
+                        "SELECT id FROM jadwal WHERE periode_id=? AND bagian_id=? AND pegawai_id=? AND hari=?",
+                        (self.periode_id, bagian_id, pj_id, hari)
+                    ).fetchone()
+                    if not pj_existing:
+                        conn2.execute(
+                            "INSERT INTO jadwal (periode_id, bagian_id, pegawai_id, hari, desa_id) VALUES (?, ?, ?, ?, ?)",
+                            (self.periode_id, bagian_id, pj_id, hari, desa_id)
+                        )
+                conn2.commit()
+            except sqlite3.IntegrityError as exc:
+                conn2.rollback()
+                messagebox.showwarning("Penugasan", "Penugasan tidak dapat disimpan. Periksa kembali pilihan kegiatan, desa, dan jadwal pegawai.", parent=win)
+                return
+            except Exception as exc:
+                conn2.rollback()
+                messagebox.showerror("Penugasan", "Penugasan tidak dapat disimpan. Silakan coba lagi.", parent=win)
+                return
+            finally:
+                conn2.close()
+
+            result["saved"] = True
+            win.destroy()
+
+        ttk.Button(bottom, text="Batal", command=batal).pack(side="right", padx=(8, 0))
+        ttk.Button(bottom, text="Simpan", command=simpan, style="Primary.TButton").pack(side="right")
+        self.fit_popup(
+            win, self.overall_calendar_window,
+            min_width=560, min_height=340, max_width=760, max_height=520
+        )
+        win.wait_window()
+
+        if result["saved"]:
+            self.refresh_after_schedule(
+                "Menyimpan penugasan dan menyegarkan semua kalender...",
+                parent=self.overall_calendar_window
+            )
+
+    def _cek_pj_kegiatan(self, bagian_id, parent=None):
+        """Pastikan kegiatan memiliki PJ sebelum penugasan dibuat."""
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT kode, COALESCE(nama_bagian,''), penanggung_jawab_id FROM bagian WHERE id=?",
+                (bagian_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if not row:
+            messagebox.showwarning(
+                "Kegiatan Tidak Ditemukan",
+                "Kegiatan yang dipilih tidak tersedia. Silakan muat ulang halaman.",
+                parent=parent or self
+            )
+            return False
+
+        kode, nama, pj_id = row
+        if not pj_id:
+            nama_tampil = (nama or '').strip() or f"Kegiatan {kode}"
+            messagebox.showwarning(
+                "Penanggung Jawab Belum Ditentukan",
+                f"{kode} — {nama_tampil} belum memiliki Penanggung Jawab.\n\n"
+                "Tentukan PJ terlebih dahulu pada Pengaturan Kegiatan sebelum membuat penugasan.",
+                parent=parent or self
+            )
+            return False
+        return True
+
+    def _bagian_id_from_kode(self, kode):
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id FROM bagian WHERE periode_id=? AND kode=?",
+                (self.periode_id, kode)
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+    def hapus_penugasan_keseluruhan(self, pegawai_id, hari, bagian_id):
+        """Menghapus penugasan dari Kalender Keseluruhan dengan aturan yang sama.
+        Klik kedua pada sel yang sudah terisi langsung menghapus, tanpa popup.
+        """
+        self.show_loading("Menghapus penugasan dan menyegarkan kalender...")
+        self.update_idletasks()
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id, bagian_id FROM jadwal WHERE periode_id=? AND pegawai_id=? AND hari=?",
+                (self.periode_id, pegawai_id, hari)
+            ).fetchone()
+            if not row or int(row[1]) != int(bagian_id):
+                self.hide_loading()
+                return
+
+            pj_row = conn.execute(
+                "SELECT penanggung_jawab_id, kode, COALESCE(nama_bagian,'') FROM bagian WHERE id=?",
+                (bagian_id,)
+            ).fetchone()
+            pj_id = pj_row[0] if pj_row else None
+            if pj_id and int(pegawai_id) == int(pj_id):
+                non_pj_count = conn.execute(
+                    "SELECT COUNT(*) FROM jadwal WHERE periode_id=? AND bagian_id=? AND hari=? AND pegawai_id<>?",
+                    (self.periode_id, bagian_id, hari, pj_id)
+                ).fetchone()[0]
+                if non_pj_count > 0:
+                    messagebox.showinfo(
+                        "Penanggung Jawab",
+                        "PJ otomatis mengikuti tanggal kegiatan dan tidak dapat dilepas selama masih ada pegawai lain pada tanggal tersebut.",
+                        parent=self.overall_calendar_window
                     )
+                    self.hide_loading()
+                    return
 
-                tombol.bind(
-                    "<Enter>",
-                    lambda event, n=nama, h=hari, d=detail: show_detail(n, h, d)
-                )
-                tombol.bind(
-                    "<Leave>",
-                    lambda event: self.calendar_detail.config(text="") if hasattr(self, "calendar_detail") else None
-                )
-                tombol.grid(row=row, column=hari, sticky="nsew", padx=1, pady=1)
+            conn.execute("DELETE FROM jadwal WHERE id=?", (row[0],))
+            conn.commit()
+        finally:
+            conn.close()
 
-        self.calendar_frame.grid_columnconfigure(0, minsize=220)
-        for col in range(1, jumlah_hari + 1):
-            self.calendar_frame.grid_columnconfigure(col, minsize=48)
-
-        self.load_kalender_keseluruhan()
+        self.hide_loading()
+        self.refresh_after_schedule(
+            "Menghapus penugasan dan menyegarkan semua kalender..."
+        )
 
     def load_kalender_keseluruhan(self):
         """Kalender dashboard bulanan: semua pegawai dan semua kegiatan, bersifat baca-saja."""
@@ -2942,7 +4005,7 @@ class App(tk.Tk):
         conn = get_connection()
         kegiatan_rows = conn.execute(
             """
-            SELECT kode, COALESCE(nama_bagian, ''), COALESCE(kegiatan, '')
+            SELECT id, kode, COALESCE(nama_bagian, ''), COALESCE(kegiatan, '')
             FROM bagian
             WHERE periode_id = ?
             ORDER BY id
@@ -2952,10 +4015,11 @@ class App(tk.Tk):
 
         jadwal_rows = conn.execute(
             """
-            SELECT j.pegawai_id, j.hari, b.kode, COALESCE(b.nama_bagian, ''),
-                   COALESCE(b.kegiatan, '')
+            SELECT j.pegawai_id, j.hari, j.bagian_id, b.kode, COALESCE(b.nama_bagian, ''),
+                   COALESCE(b.kegiatan, ''), COALESCE(d.nama, '')
             FROM jadwal j
             JOIN bagian b ON b.id = j.bagian_id
+            LEFT JOIN desa d ON d.id = j.desa_id
             WHERE j.periode_id = ?
             """,
             (self.periode_id,)
@@ -2967,13 +4031,15 @@ class App(tk.Tk):
             "#F4B8B8", "#BFE3E3", "#E7D6A8", "#C9D7B8",
             "#D5C4A1", "#C7D4F2", "#E5C1CD", "#CDE4C8"
         ]
-        colors = {row[0]: palette[i % len(palette)] for i, row in enumerate(kegiatan_rows)}
-        names = {row[0]: ((row[1] or '').strip() or f"Kegiatan {row[0]}") for row in kegiatan_rows}
+        colors = {row[1]: palette[i % len(palette)] for i, row in enumerate(kegiatan_rows)}
+        names = {row[1]: ((row[2] or '').strip() or f"Kegiatan {row[1]}") for row in kegiatan_rows}
         jadwal_map = {
             (row[0], row[1]): {
-                "kode": row[2],
-                "nama": (row[3] or '').strip() or f"Kegiatan {row[2]}",
-                "deskripsi": (row[4] or '').strip(),
+                "bagian_id": row[2],
+                "kode": row[3],
+                "nama": (row[4] or '').strip() or f"Kegiatan {row[3]}",
+                "deskripsi": (row[5] or '').strip(),
+                "desa": (row[6] or '').strip(),
             }
             for row in jadwal_rows
         }
@@ -2994,10 +4060,10 @@ class App(tk.Tk):
         tk.Label(
             self.overall_legend_kegiatan,
             text="Keterangan kegiatan:",
-            bg="#F4F6F8",
+            bg=UI_BG,
             font=("Segoe UI", 9, "bold")
         ).pack(side="left", padx=(0, 8))
-        for kode, nama, deskripsi in kegiatan_rows:
+        for bagian_id, kode, nama, deskripsi in kegiatan_rows:
             tk.Label(
                 self.overall_legend_kegiatan,
                 text=f"{kode} = {names[kode]}",
@@ -3006,11 +4072,26 @@ class App(tk.Tk):
                 font=("Segoe UI", 9, "bold")
             ).pack(side="left", padx=3)
 
+        # Pastikan scrollbar legend menghitung ulang lebar A-Z dan mulai
+        # dari kiri setiap kali kalender keseluruhan direfresh.
+        try:
+            self.overall_legend_kegiatan.update_idletasks()
+            self.overall_legend_canvas.configure(
+                scrollregion=self.overall_legend_canvas.bbox("all")
+            )
+            self.overall_legend_canvas.xview_moveto(0)
+        except Exception:
+            pass
+
         nama_hari = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
+        ttk.Label(
+            self.overall_calendar_frame, text="No.",
+            font=("Segoe UI", 9, "bold"), anchor="center"
+        ).grid(row=0, column=0, rowspan=2, sticky="nsew", padx=1, pady=1)
         ttk.Label(
             self.overall_calendar_frame, text="Nama Pegawai",
             font=("Segoe UI", 9, "bold"), anchor="center"
-        ).grid(row=0, column=0, rowspan=2, sticky="nsew", padx=1, pady=1)
+        ).grid(row=0, column=1, rowspan=2, sticky="nsew", padx=1, pady=1)
 
         for hari in range(1, jumlah_hari + 1):
             tanggal = datetime(tahun, bulan, hari)
@@ -3019,29 +4100,33 @@ class App(tk.Tk):
                 self.overall_calendar_frame, text=str(hari),
                 font=("Segoe UI", 9, "bold"), anchor="center",
                 style="Holiday.TLabel" if nonkerja else "TLabel"
-            ).grid(row=0, column=hari, sticky="nsew", padx=1, pady=(1, 0))
+            ).grid(row=0, column=hari+1, sticky="nsew", padx=1, pady=(1, 0))
             ttk.Label(
                 self.overall_calendar_frame,
                 text="LIBUR" if nonkerja else nama_hari[tanggal.weekday()],
                 font=("Segoe UI", 7 if nonkerja else 8, "bold" if nonkerja else "normal"),
                 anchor="center",
                 style="Holiday.TLabel" if nonkerja else "TLabel"
-            ).grid(row=1, column=hari, sticky="nsew", padx=1, pady=(0, 1))
+            ).grid(row=1, column=hari+1, sticky="nsew", padx=1, pady=(0, 1))
 
         semua_pegawai = sorted(self.pegawai, key=lambda p: str(p[1] or '').lower())
         if not semua_pegawai:
             ttk.Label(
                 self.overall_calendar_frame, text="Belum ada data pegawai aktif.",
                 font=("Segoe UI", 10)
-            ).grid(row=2, column=0, columnspan=jumlah_hari + 1, pady=20)
+            ).grid(row=2, column=0, columnspan=jumlah_hari + 2, pady=20)
             return
 
-        for row, pegawai in enumerate(semua_pegawai, start=2):
+        for nomor, pegawai in enumerate(semua_pegawai, start=1):
+            row = nomor + 1
             pegawai_id = pegawai[0]
             nama = pegawai[1] or "Tanpa Nama"
             ttk.Label(
-                self.overall_calendar_frame, text=nama, anchor="w", padding=(5, 0)
+                self.overall_calendar_frame, text=str(nomor), anchor="center", padding=(2, 0)
             ).grid(row=row, column=0, sticky="nsew", padx=1, pady=1)
+            ttk.Label(
+                self.overall_calendar_frame, text=nama, anchor="w", padding=(5, 0)
+            ).grid(row=row, column=1, sticky="nsew", padx=1, pady=1)
 
             for hari in range(1, jumlah_hari + 1):
                 tanggal = datetime(tahun, bulan, hari)
@@ -3053,7 +4138,7 @@ class App(tk.Tk):
                 if nonkerja:
                     cell = tk.Label(
                         self.overall_calendar_frame, text="LIBUR", width=6, height=1,
-                        relief="solid", bd=1, bg="#ECECEC", fg="#888888",
+                        relief="solid", bd=1, bg="#F1F3F5", fg="#9CA3AF",
                         font=("Segoe UI", 8)
                     )
                 else:
@@ -3064,26 +4149,60 @@ class App(tk.Tk):
                     )
 
                 if detail:
-                    detail_text = f"{nama} • Tanggal {hari} • {kode} — {detail['nama']}"
+                    desa = detail.get("desa") or "Desa belum ditentukan"
+                    cell.configure(text=f"{kode}\n{desa}", justify="center", font=("Segoe UI", 7, "bold"))
+                    detail_text = f"{nama} • Tanggal {hari} • {kode} — {detail['nama']} • Desa: {desa}"
                     if detail.get("deskripsi"):
                         detail_text += f" • {detail['deskripsi']}"
+                    detail_text += " • Klik untuk menghapus penugasan"
                     cell.bind(
                         "<Enter>",
                         lambda event, txt=detail_text: self.overall_calendar_detail.config(text=txt)
                     )
+                    cell.bind(
+                        "<Button-1>",
+                        lambda event, pid=pegawai_id, h=hari, bid=detail["bagian_id"]: self.hapus_penugasan_keseluruhan(pid, h, bid)
+                    )
+                    cell.configure(cursor="hand2")
                 else:
                     cell.bind(
                         "<Enter>",
                         lambda event, n=nama, h=hari: self.overall_calendar_detail.config(
-                            text=f"{n} • Tanggal {h} • Belum ada penugasan"
+                            text=f"{n} • Tanggal {h} • Belum ada penugasan • Klik untuk menambahkan kegiatan"
                         )
                     )
+                    cell.bind(
+                        "<Button-1>",
+                        lambda event, pid=pegawai_id, h=hari: self.pilih_penugasan_keseluruhan(pid, h)
+                    )
+                    cell.configure(cursor="hand2")
                 cell.bind("<Leave>", lambda event: self.overall_calendar_detail.config(text=""))
-                cell.grid(row=row, column=hari, sticky="nsew", padx=1, pady=1)
+                cell.grid(row=row, column=hari+1, sticky="nsew", padx=1, pady=1)
 
         self.overall_calendar_frame.grid_columnconfigure(0, minsize=220)
-        for col in range(1, jumlah_hari + 1):
-            self.overall_calendar_frame.grid_columnconfigure(col, minsize=48)
+        for col in range(2, jumlah_hari + 2):
+            self.overall_calendar_frame.grid_columnconfigure(col, minsize=72)
+        # Scroll region mengikuti ukuran tabel kalender sebenarnya.
+        try:
+            self.overall_calendar_frame.update_idletasks()
+            req_w = max(self.overall_calendar_frame.winfo_reqwidth(), 1)
+            req_h = max(self.overall_calendar_frame.winfo_reqheight(), 1)
+            view_w = max(self.overall_page_canvas.winfo_width(), 1)
+            view_h = max(self.overall_page_canvas.winfo_height(), 1)
+            self.overall_page_canvas.configure(
+                scrollregion=(0, 0, max(req_w, view_w), max(req_h, view_h))
+            )
+            # Pastikan canvas window tidak berubah menjadi lebih kecil dari tabel.
+            if hasattr(self, "_overall_calendar_window_id"):
+                self.overall_page_canvas.itemconfigure(
+                    self._overall_calendar_window_id,
+                    width=max(req_w, view_w)
+                )
+        except Exception:
+            bbox = self.overall_page_canvas.bbox("all")
+            if bbox:
+                self.overall_page_canvas.configure(scrollregion=bbox)
+        self.overall_page_canvas.after_idle(lambda: self._force_canvas_scrollregion(self.overall_page_canvas))
 
     def atur_hari_libur(self):
         """Dialog manual untuk menentukan tanggal merah pada bulan aktif."""
@@ -3093,10 +4212,13 @@ class App(tk.Tk):
         tersimpan = load_hari_libur(self.periode_id)
 
         dialog = tk.Toplevel(self)
+        self.enable_native_window_controls(dialog)
         dialog.title("Atur Hari Libur")
         dialog.transient(self)
         dialog.grab_set()
-        dialog.resizable(False, False)
+        dialog.resizable(True, True)
+        self.enable_native_window_controls(dialog)
+        self.center_window(dialog, self)
 
         tk.Label(
             dialog,
@@ -3107,7 +4229,7 @@ class App(tk.Tk):
         tk.Label(
             dialog,
             text="Centang tanggal yang tidak boleh diisi. Hari Minggu otomatis libur.",
-            fg="#666666"
+            fg=UI_MUTED
         ).pack(anchor="w", padx=18, pady=(0, 10))
 
         grid = tk.Frame(dialog)
@@ -3149,7 +4271,7 @@ class App(tk.Tk):
         tk.Label(
             dialog,
             text="* Minggu selalu libur dan tidak perlu dicentang.",
-            fg="#777777",
+            fg="#6B7280",
             font=("Segoe UI", 9, "italic")
         ).pack(anchor="w", padx=18, pady=(4, 8))
 
@@ -3186,7 +4308,7 @@ class App(tk.Tk):
                     conn.close()
                 except Exception:
                     pass
-                messagebox.showerror("Gagal Menyimpan Hari Libur", str(e), parent=dialog)
+                messagebox.showerror("Gagal Menyimpan Hari Libur", "Hari libur tidak dapat disimpan. Silakan coba lagi.", parent=dialog)
                 return
 
             dialog.destroy()
@@ -3198,8 +4320,12 @@ class App(tk.Tk):
                 parent=self
             )
 
-        ttk.Button(tombol, text="Batal", command=dialog.destroy).pack(side="right", padx=(5, 0))
-        ttk.Button(tombol, text="Simpan", command=simpan).pack(side="right")
+        ttk.Button(tombol, text="Batal", command=dialog.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(tombol, text="Simpan", command=simpan, style="Primary.TButton").pack(side="right")
+        self.fit_popup(
+            dialog, self,
+            min_width=620, min_height=420, max_width=760, max_height=700
+        )
 
     # =====================================================
     # CELL KALENDER
@@ -3263,7 +4389,7 @@ class App(tk.Tk):
 
         button.grid(
             row=row,
-            column=hari,
+            column=hari + 1,
             padx=1,
             pady=1
         )
@@ -3272,142 +4398,274 @@ class App(tk.Tk):
     # TOGGLE JADWAL
     # =====================================================
 
-    def toggle_jadwal(
-        self,
-        pegawai_id,
-        hari
-    ):
+    def pilih_desa_dialog(self, hari, desa_default=None):
+        """Meminta desa untuk tanggal penugasan melalui dropdown master desa."""
+        desa = load_desa_aktif()
+        if not desa:
+            messagebox.showwarning(
+                "Data Desa Kosong",
+                "Belum ada desa aktif di database. Tambahkan desa terlebih dahulu pada menu Data Keseluruhan → Data Desa.",
+                parent=self
+            )
+            return None
 
-        # Hari Minggu dan tanggal merah manual tidak dapat diisi.
+        win = tk.Toplevel(self)
+        self.enable_native_window_controls(win)
+        win.title(f"Pilih Desa — Tanggal {hari}")
+        win.geometry("460x210")
+        win.transient(self)
+        self.enable_native_window_controls(win)
+        win.grab_set()
+        self.enable_native_window_controls(win)
+        self.center_window(win, self)
+        tk.Label(win, text=f"Desa untuk penugasan tanggal {hari}", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=20, pady=(18, 8))
+        tk.Label(win, text="Setiap tanggal kegiatan wajib memiliki satu desa.", fg=UI_MUTED).pack(anchor="w", padx=20, pady=(0, 10))
+        var = tk.StringVar()
+        values = [x[1] for x in desa]
+        combo = ttk.Combobox(win, textvariable=var, values=values, state="readonly", width=42)
+        combo.pack(padx=20, pady=5)
+        if desa_default:
+            row = next((x for x in desa if x[0] == desa_default), None)
+            if row:
+                var.set(row[1])
+        elif values:
+            var.set(values[0])
+        result = {"id": None}
+        def simpan():
+            pilihan = var.get().strip()
+            row = next((x for x in desa if x[1] == pilihan), None)
+            if not row:
+                messagebox.showwarning("Desa", "Pilih desa terlebih dahulu.", parent=win)
+                return
+            result["id"] = row[0]
+            win.destroy()
+        # Saat pertama memilih desa, pengguna hanya perlu memilih Simpan atau Batal.
+        # Penghapusan jadwal dilakukan langsung dengan klik kedua pada sel kalender.
+        bottom = tk.Frame(win)
+        bottom.pack(fill="x", padx=20, pady=15)
+        ttk.Button(bottom, text="Batal", command=win.destroy).pack(side="right", padx=(8,0))
+        ttk.Button(bottom, text="Simpan", command=simpan, style="Primary.TButton").pack(side="right")
+        self.fit_popup(
+            win, self,
+            min_width=460, min_height=230, max_width=680, max_height=420
+        )
+        win.wait_window()
+        return result["id"]
+
+    def toggle_jadwal(self, pegawai_id, hari):
+        self.show_loading("Memproses penugasan...")
+        self.update_idletasks()
         bulan = NAMA_BULAN.index(self.bulan_var.get())
         tahun = int(self.tahun_var.get())
         if datetime(tahun, bulan, hari).weekday() == 6 or hari in load_hari_libur(self.periode_id):
+            self.hide_loading()
             return
 
         conn = get_connection()
-        cursor = conn.cursor()
+        try:
+            existing = conn.execute("""
+                SELECT j.id, j.bagian_id, j.desa_id, COALESCE(d.nama, '')
+                FROM jadwal j LEFT JOIN desa d ON d.id = j.desa_id
+                WHERE j.periode_id = ? AND j.pegawai_id = ? AND j.hari = ?
+            """, (self.periode_id, pegawai_id, hari)).fetchone()
 
-        existing = cursor.execute("""
-            SELECT
-                id,
-                bagian_id
-            FROM jadwal
-            WHERE periode_id = ?
-            AND pegawai_id = ?
-            AND hari = ?
-        """, (
-            self.periode_id,
-            pegawai_id,
-            hari
-        )).fetchone()
-
-        if existing:
-
-            if existing[1] == self.bagian_id:
-
-                # Hapus jadwal sendiri
-                cursor.execute("""
-                    DELETE FROM jadwal
-                    WHERE id = ?
-                """, (
-                    existing[0],
-                ))
-
-                conn.commit()
-                conn.close()
-
-                self.load_kalender()
-                self.refresh_data_pegawai()
-
-                return
-
-            else:
-
-                # Bentrok
-                bagian_lain = cursor.execute("""
-                    SELECT kode, COALESCE(nama_bagian, '')
-                    FROM bagian
-                    WHERE id = ?
-                """, (
-                    existing[1],
-                )).fetchone()
-
-                conn.close()
-
+            if existing and existing[1] != self.bagian_id:
+                bagian_lain = conn.execute("SELECT kode, COALESCE(nama_bagian, '') FROM bagian WHERE id = ?", (existing[1],)).fetchone()
                 kode_lain = bagian_lain[0] if bagian_lain else "?"
-                nama_lain = (bagian_lain[1] if bagian_lain else "").strip() or f"Kegiatan {kode_lain}"
-                nama_kegiatan_lain = f"Kegiatan {kode_lain} — {nama_lain}"
-                messagebox.showwarning(
-                    "Jadwal Bentrok",
-                    f"Pegawai ini sudah bertugas pada {nama_kegiatan_lain} "
-                    f"pada tanggal {hari}.\n\n"
-                    f"Pegawai tidak dapat ditugaskan pada dua kegiatan "
-                    f"di tanggal yang sama."
-                )
-
+                nama_lain = (bagian_lain[1] if bagian_lain else '').strip() or f"Kegiatan {kode_lain}"
+                messagebox.showwarning("Jadwal Bentrok", f"Pegawai ini sudah bertugas pada Kegiatan {kode_lain} — {nama_lain} pada tanggal {hari}.", parent=self)
+                self.hide_loading()
                 return
 
-        # Tambah jadwal
-        cursor.execute("""
-            INSERT INTO jadwal
-            (
-                periode_id,
-                bagian_id,
-                pegawai_id,
-                hari
-            )
-            VALUES (?, ?, ?, ?)
-        """, (
-            self.periode_id,
-            self.bagian_id,
-            pegawai_id,
-            hari
-        ))
+            if existing and existing[1] == self.bagian_id:
+                pj_id = getattr(self, "penanggung_jawab_id", None)
+                if pegawai_id == pj_id:
+                    non_pj_count = conn.execute("SELECT COUNT(*) FROM jadwal WHERE periode_id=? AND bagian_id=? AND hari=? AND pegawai_id<>?", (self.periode_id, self.bagian_id, hari, pj_id)).fetchone()[0] if pj_id else 0
+                    if non_pj_count > 0:
+                        messagebox.showinfo("Penanggung Jawab", "PJ otomatis mengikuti tanggal kegiatan dan tidak dapat dilepas selama masih ada pegawai lain pada tanggal tersebut.", parent=self)
+                        self.hide_loading()
+                        return
+                conn.execute("DELETE FROM jadwal WHERE id = ?", (existing[0],))
+                conn.commit()
 
-        conn.commit()
-        conn.close()
+                # Klik kedua pada pegawai yang sudah terpilih = hapus penugasan.
+                # Langsung refresh seluruh tampilan agar perubahan terlihat tanpa
+                # harus menekan tombol Refresh manual.
+                self.hide_loading()
+                self.refresh_after_schedule(
+                    "Menghapus penugasan dan menyegarkan kalender..."
+                )
+                return
 
-        self.load_kalender()
+            # Baru pada jalur penambahan penugasan kita wajib memastikan PJ sudah ada.
+            if not self._cek_pj_kegiatan(self.bagian_id, parent=self):
+                self.hide_loading()
+                return
+
+            existing_activity_day = conn.execute("SELECT desa_id FROM jadwal WHERE periode_id=? AND bagian_id=? AND hari=? LIMIT 1", (self.periode_id, self.bagian_id, hari)).fetchone()
+            self.hide_loading()
+            desa_id = existing_activity_day[0] if existing_activity_day and existing_activity_day[0] else self.pilih_desa_dialog(hari)
+            if not desa_id:
+                self.hide_loading()
+                return
+
+            # Satu desa tidak boleh dipakai dua kegiatan pada tanggal yang sama.
+            konflik_desa = conn.execute("""
+                SELECT b.kode, COALESCE(b.nama_bagian, '')
+                FROM jadwal j JOIN bagian b ON b.id=j.bagian_id
+                WHERE j.periode_id=? AND j.hari=? AND j.desa_id=? AND j.bagian_id<>?
+                LIMIT 1
+            """, (self.periode_id, hari, desa_id, self.bagian_id)).fetchone()
+            if konflik_desa:
+                kode, nama = konflik_desa
+                nama = nama.strip() or f"Kegiatan {kode}"
+                desa_row = load_desa_by_id(desa_id)
+                nama_desa = desa_row[1] if desa_row else "desa tersebut"
+                messagebox.showwarning("Desa Bentrok", f"{nama_desa} sudah digunakan oleh Kegiatan {kode} — {nama} pada tanggal {hari}.", parent=self)
+                self.hide_loading()
+                return
+
+            conn.execute("INSERT INTO jadwal (periode_id, bagian_id, pegawai_id, hari, desa_id) VALUES (?, ?, ?, ?, ?)", (self.periode_id, self.bagian_id, pegawai_id, hari, desa_id))
+
+            # PJ otomatis turun pada tanggal kegiatan yang dipilih.
+            pj_id = getattr(self, "penanggung_jawab_id", None)
+            if pj_id and pj_id != pegawai_id:
+                pj_existing = conn.execute("SELECT id FROM jadwal WHERE periode_id=? AND bagian_id=? AND pegawai_id=? AND hari=?", (self.periode_id, self.bagian_id, pj_id, hari)).fetchone()
+                if not pj_existing:
+                    conn.execute("INSERT INTO jadwal (periode_id, bagian_id, pegawai_id, hari, desa_id) VALUES (?, ?, ?, ?, ?)", (self.periode_id, self.bagian_id, pj_id, hari, desa_id))
+
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            self.hide_loading()
+            messagebox.showwarning("Jadwal", "Penugasan tidak dapat disimpan. Periksa kembali pilihan kegiatan, desa, dan jadwal pegawai.", parent=self)
+        except Exception as exc:
+            conn.rollback()
+            self.hide_loading()
+            messagebox.showerror("Jadwal", "Penugasan tidak dapat disimpan. Silakan coba lagi.", parent=self)
+        finally:
+            conn.close()
+
+        self.hide_loading()
+        self.refresh_after_schedule(
+            "Menyimpan penugasan dan menyegarkan kalender..."
+        )
 
     def build_data_kegiatan(self):
         """Tabel rekap penugasan khusus kegiatan aktif pada bulan aktif."""
         for w in self.tab_data_kegiatan.winfo_children():
             w.destroy()
 
+        # Seluruh halaman Data Kegiatan dapat digeser dua arah. Tabel-tabel di
+        # dalamnya tetap memiliki scrollbar masing-masing untuk data yang panjang.
+        container = tk.Frame(self.tab_data_kegiatan, bg=UI_BG)
+        container.pack(fill="both", expand=True)
+        page_canvas = tk.Canvas(container, bg=UI_BG, highlightthickness=0)
+        page_v = ttk.Scrollbar(container, orient="vertical", command=page_canvas.yview)
+        page_h = ttk.Scrollbar(container, orient="horizontal", command=page_canvas.xview)
+        page_canvas.configure(yscrollcommand=page_v.set, xscrollcommand=page_h.set)
+        page_canvas.grid(row=0, column=0, sticky="nsew")
+        page_v.grid(row=0, column=1, sticky="ns")
+        page_h.grid(row=1, column=0, sticky="ew")
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+        content = tk.Frame(page_canvas, bg=UI_BG)
+        page_window = page_canvas.create_window((0, 0), window=content, anchor="nw")
+        self.data_kegiatan_page_canvas = page_canvas
+        content.bind("<Configure>", lambda e: page_canvas.configure(scrollregion=page_canvas.bbox("all")))
+        page_canvas.bind("<Configure>", lambda e: page_canvas.itemconfigure(page_window, width=max(e.width, content.winfo_reqwidth())))
+
         tk.Label(
-            self.tab_data_kegiatan, text="DATA KEGIATAN",
-            bg="#F4F6F8", font=("Segoe UI", 16, "bold")
+            content, text="DATA KEGIATAN",
+            bg=UI_BG, font=("Segoe UI Semibold", 14)
         ).pack(anchor="w", padx=20, pady=(15, 3))
 
         self.data_kegiatan_info = tk.Label(
-            self.tab_data_kegiatan, text="", bg="#F4F6F8", fg="#555555"
+            content, text="", bg=UI_BG, fg=UI_MUTED
         )
         self.data_kegiatan_info.pack(anchor="w", padx=20, pady=(0, 8))
 
-        frame = tk.Frame(self.tab_data_kegiatan, bg="white")
+        frame = tk.Frame(
+            content,
+            bg=UI_PANEL,
+            highlightbackground=UI_BORDER,
+            highlightthickness=1
+        )
         frame.pack(fill="both", expand=True, padx=20, pady=10)
         # Data Kegiatan hanya menampilkan JUMLAH TURUN pada kegiatan ini.
         # Tanggal/hari penugasan sudah ditampilkan pada Kalender Kegiatan,
         # sehingga tidak perlu diduplikasi di tabel data.
-        cols = ("nama", "nip", "pangkat", "golongan", "jabatan", "tarif", "pj", "jumlah")
+        cols = ("no", "nama", "nip", "pangkat", "golongan", "jabatan", "tarif", "pj", "jumlah")
         self.table_data_kegiatan = ttk.Treeview(frame, columns=cols, show="headings", selectmode="browse")
         heads = {
-            "nama":"Nama", "nip":"NIP", "pangkat":"Pangkat", "golongan":"Golongan",
+            "no":"No.", "nama":"Nama", "nip":"NIP", "pangkat":"Pangkat", "golongan":"Golongan",
             "jabatan":"Jabatan", "tarif":"Tarif", "pj":"PJ",
             "jumlah":"Turun"
         }
-        widths = {"nama":280,"nip":185,"pangkat":170,"golongan":105,"jabatan":230,"tarif":125,"pj":70,"jumlah":120}
+        widths = {"no":58,"nama":280,"nip":185,"pangkat":170,"golongan":105,"jabatan":230,"tarif":125,"pj":70,"jumlah":120}
         for c in cols:
             self.table_data_kegiatan.heading(c, text=heads[c])
             self.table_data_kegiatan.column(c, width=widths[c], anchor="center")
         self.table_data_kegiatan.column("nama", anchor="w")
         self.table_data_kegiatan.column("jabatan", anchor="w")
-        self.table_data_kegiatan.pack(side="left", fill="both", expand=True)
+        self.table_data_kegiatan.pack(side="top", fill="both", expand=True)
         scroll=ttk.Scrollbar(frame, orient="vertical", command=self.table_data_kegiatan.yview)
         scroll.pack(side="right", fill="y")
-        self.table_data_kegiatan.configure(yscrollcommand=scroll.set)
+        scroll_x=ttk.Scrollbar(frame, orient="horizontal", command=self.table_data_kegiatan.xview)
+        scroll_x.pack(side="bottom", fill="x")
+        self.table_data_kegiatan.configure(yscrollcommand=scroll.set, xscrollcommand=scroll_x.set)
+        self.modernize_tree(self.table_data_kegiatan)
 
-        toolbar = tk.Frame(self.tab_data_kegiatan, bg="#F4F6F8")
+        # Ringkasan desa yang dipakai pada kegiatan ini.
+        desa_title = tk.Label(
+            content,
+            text="REKAP DESA PADA KEGIATAN INI",
+            bg=UI_BG,
+            font=("Segoe UI", 11, "bold")
+        )
+        desa_title.pack(anchor="w", padx=20, pady=(4, 4))
+
+        desa_frame = tk.Frame(
+            content,
+            bg=UI_PANEL,
+            highlightbackground=UI_BORDER,
+            highlightthickness=1
+        )
+        desa_frame.pack(fill="both", expand=False, padx=20, pady=(0, 10))
+        desa_frame.grid_rowconfigure(0, weight=1)
+        desa_frame.grid_columnconfigure(0, weight=1)
+
+        desa_cols = ("no", "desa", "turun", "tanggal", "kegiatan")
+        self.table_desa_kegiatan = ttk.Treeview(
+            desa_frame, columns=desa_cols, show="headings", height=6
+        )
+        self.table_desa_kegiatan.heading("no", text="No.")
+        self.table_desa_kegiatan.heading("desa", text="Desa")
+        self.table_desa_kegiatan.heading("turun", text="Dipakai")
+        self.table_desa_kegiatan.heading("tanggal", text="Tanggal")
+        self.table_desa_kegiatan.heading("kegiatan", text="Kegiatan")
+        self.table_desa_kegiatan.column("no", width=58, anchor="center", stretch=False)
+        self.table_desa_kegiatan.column("desa", width=280, anchor="w")
+        self.table_desa_kegiatan.column("turun", width=100, anchor="center")
+        self.table_desa_kegiatan.column("tanggal", width=180, anchor="w")
+        self.table_desa_kegiatan.column("kegiatan", width=360, anchor="w")
+        self.table_desa_kegiatan.grid(row=0, column=0, sticky="nsew")
+
+        desa_vscroll = ttk.Scrollbar(
+            desa_frame, orient="vertical", command=self.table_desa_kegiatan.yview
+        )
+        desa_vscroll.grid(row=0, column=1, sticky="ns")
+        desa_hscroll = ttk.Scrollbar(
+            desa_frame, orient="horizontal", command=self.table_desa_kegiatan.xview
+        )
+        desa_hscroll.grid(row=1, column=0, sticky="ew")
+        self.table_desa_kegiatan.configure(
+            yscrollcommand=desa_vscroll.set,
+            xscrollcommand=desa_hscroll.set
+        )
+        self.modernize_tree(self.table_desa_kegiatan)
+
+        toolbar = tk.Frame(content, bg=UI_BG)
         toolbar.pack(fill="x", padx=20, pady=(0, 12))
         ttk.Button(
             toolbar,
@@ -3417,7 +4675,7 @@ class App(tk.Tk):
         tk.Label(
             toolbar,
             text="Hapus pegawai dari kegiatan ini pada bulan aktif beserta jadwalnya.",
-            bg="#F4F6F8", fg="#666666", font=("Segoe UI", 9)
+            bg=UI_BG, fg=UI_MUTED, font=("Segoe UI", 9)
         ).pack(side="left", padx=10)
         self.table_data_kegiatan.bind(
             "<Delete>", lambda event: self.hapus_keanggotaan_kegiatan_terpilih()
@@ -3480,7 +4738,7 @@ class App(tk.Tk):
             conn.commit()
         except Exception as exc:
             conn.rollback()
-            messagebox.showerror("Gagal Menghapus", f"Keanggotaan gagal dihapus.\n\n{exc}", parent=self)
+            messagebox.showerror("Gagal Menghapus", "Keanggotaan tidak dapat dihapus. Silakan coba lagi.", parent=self)
             return
         finally:
             conn.close()
@@ -3518,7 +4776,7 @@ class App(tk.Tk):
                 FROM anggota_bagian ab JOIN pegawai p ON p.id=ab.pegawai_id
                 WHERE ab.bagian_id=? ORDER BY p.nama
             """, (bagian_id,)).fetchall()
-            for p in anggota:
+            for nomor, p in enumerate(anggota, start=1):
                 # Satu-satunya angka rekap di Data Kegiatan adalah
                 # jumlah turun pegawai pada kegiatan ini di bulan aktif.
                 jumlah_turun = conn.execute(
@@ -3528,258 +4786,555 @@ class App(tk.Tk):
                 self.table_data_kegiatan.insert(
                     "", "end", iid=str(p[0]),
                     values=(
-                        p[1],p[2],p[3],p[4],p[5],rupiah(p[6]),
+                        nomor, p[1],p[2],p[3],p[4],p[5],rupiah(p[6]),
                         "Ya" if p[0]==pj_id else "",
                         f"{jumlah_turun} kali"
                     )
                 )
+
+            if hasattr(self, "table_desa_kegiatan"):
+                for item in self.table_desa_kegiatan.get_children():
+                    self.table_desa_kegiatan.delete(item)
+
+                desa_rekap = conn.execute("""
+                    SELECT d.nama,
+                           COUNT(DISTINCT j.hari) AS jumlah_dipakai,
+                           GROUP_CONCAT(DISTINCT j.hari) AS tanggal,
+                           GROUP_CONCAT(DISTINCT
+                               CASE
+                                   WHEN COALESCE(b.nama_bagian,'') <> '' THEN
+                                       b.kode || ' - ' || b.nama_bagian
+                                   ELSE
+                                       'Kegiatan ' || b.kode
+                               END
+                           ) AS kegiatan
+                    FROM jadwal j
+                    JOIN desa d ON d.id=j.desa_id
+                    JOIN bagian b ON b.id=j.bagian_id
+                    WHERE j.periode_id=? AND j.bagian_id=? AND j.desa_id IS NOT NULL
+                    GROUP BY d.id, d.nama
+                    ORDER BY d.nama COLLATE NOCASE
+                """, (self.periode_id, bagian_id)).fetchall()
+
+                for nomor_desa, (nama_desa, jumlah_dipakai, tanggal, kegiatan_desa) in enumerate(desa_rekap, start=1):
+                    try:
+                        tanggal_list = sorted({int(x) for x in (tanggal or "").split(",") if str(x).strip()})
+                        tanggal_text = ", ".join(str(x) for x in tanggal_list) if tanggal_list else "-"
+                    except Exception:
+                        tanggal_text = tanggal or "-"
+                    self.table_desa_kegiatan.insert(
+                        "", "end",
+                        values=(
+                            nomor_desa,
+                            nama_desa,
+                            f"{jumlah_dipakai} kali",
+                            tanggal_text,
+                            kegiatan_desa or f"Kegiatan {kode}"
+                        )
+                    )
         finally:
             conn.close()
 
     def build_jadwal(self):
+        """Kalender Kegiatan dengan scroll halaman 2 arah.
 
+        Seluruh halaman kalender (judul, legenda kegiatan A-Z, ringkasan,
+        dan tabel kalender) berada dalam satu viewport sehingga semuanya
+        dapat digeser atas/bawah dan kiri/kanan ketika konten lebih besar
+        daripada layar.
+        """
         style = ttk.Style(self)
-        style.configure(
-            "Holiday.TLabel",
-            foreground="#888888",
-            background="#ECECEC"
-        )
+        style.configure("Holiday.TLabel", foreground="#888888", background="#ECECEC")
 
-        tk.Label(
-            self.tab_jadwal,
-            text="KALENDER PENUGASAN KEGIATAN",
-            bg="#F4F6F8",
-            font=("Segoe UI", 16, "bold")
-        ).pack(
-            anchor="w",
-            padx=15,
-            pady=(15, 3)
-        )
+        root = tk.Frame(self.tab_jadwal, bg=UI_BG)
+        root.pack(fill="both", expand=True)
+        root.grid_rowconfigure(0, weight=1)
+        root.grid_columnconfigure(0, weight=1)
 
-        self.info_kalender = tk.Label(
-            self.tab_jadwal,
-            text="",
-            bg="#F4F6F8",
-            fg="#555555"
+        # Satu canvas untuk SELURUH halaman kalender. Jangan pisahkan header
+        # dan tabel ke viewport berbeda, supaya legenda kegiatan E-Z juga ikut
+        # bergerak saat user scroll horizontal.
+        viewport = tk.Frame(
+            root, bg=UI_PANEL,
+            highlightbackground=UI_BORDER, highlightthickness=1
         )
+        viewport.grid(row=0, column=0, sticky="nsew", padx=14, pady=10)
+        viewport.grid_rowconfigure(0, weight=1)
+        viewport.grid_columnconfigure(0, weight=1)
 
-        self.info_kalender.pack(
-            anchor="w",
-            padx=15
+        canvas = tk.Canvas(
+            viewport, bg=UI_BG, highlightthickness=0,
+            xscrollincrement=20, yscrollincrement=20
         )
-
-        kalender_tools = tk.Frame(
-            self.tab_jadwal,
-            bg="#F4F6F8"
+        vscroll = tk.Scrollbar(
+            viewport, orient="vertical", command=canvas.yview,
+            width=18, bg="#94A3B8", troughcolor="#E2E8F0",
+            activebackground="#64748B", relief="flat", bd=0
         )
-        kalender_tools.pack(
-            fill="x",
-            padx=15,
-            pady=(8, 0)
+        hscroll = tk.Scrollbar(
+            viewport, orient="horizontal", command=canvas.xview,
+            width=18, bg="#94A3B8", troughcolor="#E2E8F0",
+            activebackground="#64748B", relief="flat", bd=0
         )
-
-        ttk.Button(
-            kalender_tools,
-            text="⚙ Atur Hari Libur",
-            command=self.atur_hari_libur
-        ).pack(side="left")
-
-        self.info_libur = tk.Label(
-            kalender_tools,
-            text="",
-            bg="#F4F6F8",
-            fg="#666666"
-        )
-        self.info_libur.pack(side="left", padx=12)
-
-        self.legend_kegiatan = tk.Frame(
-            self.tab_jadwal,
-            bg="#F4F6F8"
-        )
-        self.legend_kegiatan.pack(
-            fill="x",
-            padx=15,
-            pady=(8, 0)
-        )
-
-        self.calendar_detail = tk.Label(
-            self.tab_jadwal,
-            text="",
-            bg="#F4F6F8",
-            fg="#555555",
-            anchor="w"
-        )
-        self.calendar_detail.pack(
-            fill="x",
-            padx=15,
-            pady=(4, 0)
-        )
-
-        outer = tk.Frame(
-            self.tab_jadwal
-        )
-
-        outer.pack(
-            fill="both",
-            expand=True,
-            padx=15,
-            pady=10
-        )
-
-        self.calendar_canvas = tk.Canvas(
-            outer,
-            bg="white"
-        )
-
-        hscroll = ttk.Scrollbar(
-            outer,
-            orient="horizontal",
-            command=self.calendar_canvas.xview
-        )
-
-        vscroll = ttk.Scrollbar(
-            outer,
-            orient="vertical",
-            command=self.calendar_canvas.yview
-        )
-
-        self.calendar_canvas.configure(
-            xscrollcommand=hscroll.set,
-            yscrollcommand=vscroll.set
-        )
-
-        self.calendar_canvas.grid(
-            row=0,
-            column=0,
-            sticky="nsew"
-        )
-
-        vscroll.grid(
-            row=0,
-            column=1,
-            sticky="ns"
-        )
-
-        hscroll.grid(
-            row=1,
-            column=0,
-            sticky="ew"
-        )
-
-        outer.rowconfigure(
-            0,
-            weight=1
-        )
-
-        outer.columnconfigure(
-            0,
-            weight=1
-        )
-
-        self.calendar_frame = tk.Frame(
-            self.calendar_canvas,
-            bg="white"
-        )
-
-        self.calendar_window = (
-            self.calendar_canvas.create_window(
-                (0, 0),
-                window=self.calendar_frame,
-                anchor="nw"
-            )
-        )
-
-        self.calendar_frame.bind(
-            "<Configure>",
-            lambda e: self.calendar_canvas.configure(
-                scrollregion=self.calendar_canvas.bbox("all")
-            )
-        )
-
-    def build_kalender_keseluruhan(self, parent):
-        """Membangun jendela kalender keseluruhan untuk semua pegawai dan kegiatan."""
-        ttk.Style(self).configure(
-            "Holiday.TLabel", foreground="#888888", background="#ECECEC"
-        )
-
-        tk.Label(
-            parent,
-            text="KALENDER KESELURUHAN",
-            bg="#F4F6F8", font=("Segoe UI", 16, "bold")
-        ).pack(anchor="w", padx=15, pady=(15, 3))
-
-        self.overall_info_kalender = tk.Label(
-            parent, text="",
-            bg="#F4F6F8", fg="#555555"
-        )
-        self.overall_info_kalender.pack(anchor="w", padx=15)
-
-        tools = tk.Frame(parent, bg="#F4F6F8")
-        tools.pack(fill="x", padx=15, pady=(8, 0))
-        ttk.Button(
-            tools, text="⚙ Atur Hari Libur", command=self.atur_hari_libur
-        ).pack(side="left")
-        self.overall_info_libur = tk.Label(
-            tools, text="", bg="#F4F6F8", fg="#666666"
-        )
-        self.overall_info_libur.pack(side="left", padx=12)
-
-        self.overall_legend_kegiatan = tk.Frame(
-            parent, bg="#F4F6F8"
-        )
-        self.overall_legend_kegiatan.pack(fill="x", padx=15, pady=(8, 0))
-
-        self.overall_calendar_detail = tk.Label(
-            parent, text="", bg="#F4F6F8",
-            fg="#555555", anchor="w"
-        )
-        self.overall_calendar_detail.pack(fill="x", padx=15, pady=(4, 0))
-
-        outer = tk.Frame(parent)
-        outer.pack(fill="both", expand=True, padx=15, pady=10)
-
-        canvas = tk.Canvas(outer, bg="white")
-        hscroll = ttk.Scrollbar(outer, orient="horizontal", command=canvas.xview)
-        vscroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        canvas.configure(xscrollcommand=hscroll.set, yscrollcommand=vscroll.set)
+        canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
         canvas.grid(row=0, column=0, sticky="nsew")
         vscroll.grid(row=0, column=1, sticky="ns")
         hscroll.grid(row=1, column=0, sticky="ew")
-        outer.rowconfigure(0, weight=1)
-        outer.columnconfigure(0, weight=1)
 
-        self.overall_calendar_frame = tk.Frame(canvas, bg="white")
-        canvas.create_window((0, 0), window=self.overall_calendar_frame, anchor="nw")
-        self.overall_calendar_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        # Natural-size content. Lebar minimum mengikuti viewport, tetapi
+        # tidak pernah dipaksa mengecil ketika kalender/legenda lebih lebar.
+        page_content = tk.Frame(canvas, bg=UI_BG)
+        window_id = canvas.create_window((0, 0), window=page_content, anchor="nw")
+
+        self.jadwal_page_canvas = canvas
+        self.jadwal_page_content = page_content
+        self.calendar_canvas = canvas
+
+        header = tk.Frame(page_content, bg=UI_BG)
+        header.pack(fill="x", padx=20, pady=(18, 8))
+
+        tk.Label(
+            header, text="KALENDER PENUGASAN KEGIATAN", bg=UI_BG,
+            font=("Segoe UI Semibold", 15), fg=UI_TEXT
+        ).pack(anchor="w", pady=(0, 3))
+
+        self.info_kalender = tk.Label(header, text="", bg=UI_BG, fg=UI_MUTED)
+        self.info_kalender.pack(anchor="w")
+
+        kalender_tools = tk.Frame(header, bg=UI_BG)
+        kalender_tools.pack(fill="x", pady=(10, 0))
+        ttk.Button(
+            kalender_tools, text="⚙ Atur Hari Libur", command=self.atur_hari_libur
+        ).pack(side="left")
+        self.info_libur = tk.Label(kalender_tools, text="", bg=UI_BG, fg=UI_MUTED)
+        self.info_libur.pack(side="left", padx=12)
+
+        # Legend tetap bagian dari page_content, sehingga Kegiatan A-Z ikut
+        # horizontal scroll bersama kalender.
+        self.legend_kegiatan = tk.Frame(header, bg=UI_BG)
+        self.legend_kegiatan.pack(fill="x", pady=(8, 0))
+
+        self.calendar_detail = tk.Label(
+            header, text="", bg=UI_BG, fg=UI_MUTED, anchor="w"
         )
+        self.calendar_detail.pack(fill="x", pady=(5, 0))
+
+        self.calendar_summary = tk.Label(
+            header, text="", bg=UI_BG, fg=UI_TEXT,
+            justify="left", anchor="w", font=("Segoe UI", 10, "bold")
+        )
+        self.calendar_summary.pack(fill="x", pady=(5, 0))
+
+        # Tabel kalender berada langsung di halaman yang sama. Karena
+        # page_content memiliki ukuran natural, tabel 31 hari + pegawai
+        # sebanyak apa pun akan memperbesar scrollregion halaman.
+        calendar_shell = tk.Frame(
+            page_content, bg="white",
+            highlightbackground=UI_BORDER, highlightthickness=1
+        )
+        calendar_shell.pack(fill="both", expand=False, padx=20, pady=(4, 16), anchor="nw")
+
+        calendar_frame = tk.Frame(calendar_shell, bg="white")
+        calendar_frame.pack(fill="both", expand=False, padx=1, pady=1)
+        self.calendar_frame = calendar_frame
+
+        # Hitung scrollregion dari seluruh halaman, bukan hanya tabel.
+        def update_page_region(event=None):
+            try:
+                page_content.update_idletasks()
+                req_w = max(page_content.winfo_reqwidth(), 1)
+                req_h = max(page_content.winfo_reqheight(), 1)
+                view_w = max(canvas.winfo_width(), 1)
+                canvas.itemconfigure(window_id, width=max(req_w, view_w))
+                canvas.configure(
+                    scrollregion=(0, 0, max(req_w, view_w), max(req_h, canvas.winfo_height()))
+                )
+            except tk.TclError:
+                pass
+
+        def resize_viewport(event=None):
+            update_page_region()
+
+        page_content.bind("<Configure>", update_page_region)
+        canvas.bind("<Configure>", resize_viewport)
+
+        # Mouse wheel berlaku di seluruh isi kalender, termasuk tombol/legend.
+        def is_inside_calendar(event):
+            try:
+                widget = canvas.winfo_containing(event.x_root, event.y_root)
+                if widget is None:
+                    return False
+                current = widget
+                while current is not None:
+                    if current == canvas or current == page_content:
+                        return True
+                    current = getattr(current, "master", None)
+            except Exception:
+                return False
+            return False
+
+        def on_wheel(event):
+            if not is_inside_calendar(event):
+                return
+            canvas.yview_scroll(int(-event.delta / 120), "units")
+
+        def on_shift_wheel(event):
+            if not is_inside_calendar(event):
+                return
+            canvas.xview_scroll(int(-event.delta / 120), "units")
+
+        canvas.bind("<MouseWheel>", on_wheel, add="+")
+        canvas.bind("<Shift-MouseWheel>", on_shift_wheel, add="+")
+        canvas.bind("<Button-4>", lambda e: canvas.yview_scroll(-2, "units"), add="+")
+        canvas.bind("<Button-5>", lambda e: canvas.yview_scroll(2, "units"), add="+")
+
+        # Simpan helper agar load_kalender dapat memaksa ukuran halaman setelah
+        # tabel selesai dibangun.
+        self._update_jadwal_page_region = update_page_region
+        self._jadwal_page_window_id = window_id
+
+    def build_kalender_keseluruhan(self, parent):
+        """Kalender Keseluruhan dengan scrollbar vertikal + horizontal yang nyata."""
+        ttk.Style(self).configure("Holiday.TLabel", foreground="#888888", background="#ECECEC")
+
+        root = tk.Frame(parent, bg=UI_BG)
+        root.pack(fill="both", expand=True)
+
+        header = tk.Frame(root, bg=UI_BG)
+        header.pack(fill="x", padx=20, pady=(18, 8))
+
+        tk.Label(
+            header, text="KALENDER KESELURUHAN", bg=UI_BG,
+            font=("Segoe UI Semibold", 15), fg=UI_TEXT
+        ).pack(anchor="w", pady=(0, 3))
+        self.overall_info_kalender = tk.Label(header, text="", bg=UI_BG, fg=UI_MUTED)
+        self.overall_info_kalender.pack(anchor="w")
+
+        tools = tk.Frame(header, bg=UI_BG)
+        tools.pack(fill="x", pady=(10, 0))
+        ttk.Button(
+            tools, text="⚙ Atur Hari Libur", command=self.atur_hari_libur
+        ).pack(side="left")
+        self.overall_info_libur = tk.Label(tools, text="", bg=UI_BG, fg=UI_MUTED)
+        self.overall_info_libur.pack(side="left", padx=12)
+
+        # Legend kegiatan memiliki scrollbar horizontal sendiri.
+        # Jadi ketika kegiatan sudah A-Z, user tetap dapat menggeser sampai
+        # Kegiatan L, M, ... Z tanpa menggeser seluruh kalender.
+        legend_holder = tk.Frame(header, bg=UI_BG)
+        legend_holder.pack(fill="x", pady=(10, 0))
+        self.overall_legend_canvas = tk.Canvas(
+            legend_holder, bg=UI_BG, highlightthickness=0, height=36
+        )
+        self.overall_legend_canvas.pack(fill="x", expand=True)
+        self.overall_legend_scroll = tk.Scrollbar(
+            legend_holder, orient="horizontal",
+            command=self.overall_legend_canvas.xview,
+            width=14, bg="#94A3B8", troughcolor="#E2E8F0",
+            activebackground="#64748B", relief="flat", bd=0
+        )
+        self.overall_legend_scroll.pack(fill="x", pady=(2, 0))
+        self.overall_legend_canvas.configure(
+            xscrollcommand=self.overall_legend_scroll.set
+        )
+        self.overall_legend_kegiatan = tk.Frame(
+            self.overall_legend_canvas, bg=UI_BG
+        )
+        self._overall_legend_window = self.overall_legend_canvas.create_window(
+            (0, 0), window=self.overall_legend_kegiatan, anchor="nw"
+        )
+        self.overall_legend_kegiatan.bind(
+            "<Configure>",
+            lambda e: self.overall_legend_canvas.configure(
+                scrollregion=self.overall_legend_canvas.bbox("all")
+            )
+        )
+        self.overall_legend_canvas.bind(
+            "<Configure>",
+            lambda e: self.overall_legend_canvas.itemconfigure(
+                self._overall_legend_window,
+                height=max(34, e.height)
+            )
+        )
+        self.overall_legend_canvas.bind(
+            "<MouseWheel>",
+            lambda e: self.overall_legend_canvas.xview_scroll(
+                int(-e.delta / 120), "units"
+            ), add="+"
+        )
+        self.overall_legend_canvas.bind(
+            "<Shift-MouseWheel>",
+            lambda e: self.overall_legend_canvas.xview_scroll(
+                int(-e.delta / 120), "units"
+            ), add="+"
+        )
+        self.overall_legend_canvas.bind(
+            "<Button-4>",
+            lambda e: self.overall_legend_canvas.xview_scroll(-2, "units"),
+            add="+"
+        )
+        self.overall_legend_canvas.bind(
+            "<Button-5>",
+            lambda e: self.overall_legend_canvas.xview_scroll(2, "units"),
+            add="+"
+        )
+
+        self.overall_calendar_detail = tk.Label(
+            header, text="", bg=UI_BG, fg=UI_MUTED, anchor="w"
+        )
+        self.overall_calendar_detail.pack(fill="x", pady=(5, 0))
+
+        viewport = tk.Frame(
+            root, bg=UI_PANEL,
+            highlightbackground=UI_BORDER, highlightthickness=1
+        )
+        viewport.pack(fill="both", expand=True, padx=20, pady=(4, 16))
+        viewport.grid_rowconfigure(0, weight=1)
+        viewport.grid_columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(
+            viewport, bg="white", highlightthickness=0,
+            xscrollincrement=20, yscrollincrement=20
+        )
+        vscroll = tk.Scrollbar(
+            viewport, orient="vertical", command=canvas.yview,
+            width=18, bg="#94A3B8", troughcolor="#E2E8F0",
+            activebackground="#64748B", relief="flat", bd=0
+        )
+        hscroll = tk.Scrollbar(
+            viewport, orient="horizontal", command=canvas.xview,
+            width=18, bg="#94A3B8", troughcolor="#E2E8F0",
+            activebackground="#64748B", relief="flat", bd=0
+        )
+        canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vscroll.grid(row=0, column=1, sticky="ns")
+        hscroll.grid(row=1, column=0, sticky="ew")
+
+        calendar_frame = tk.Frame(canvas, bg="white")
+        window_id = canvas.create_window((0, 0), window=calendar_frame, anchor="nw")
+
+        self.overall_page_canvas = canvas
         self.overall_calendar_canvas = canvas
+        self.overall_calendar_frame = calendar_frame
+        self._overall_calendar_window_id = window_id
+
+        def update_region(event=None):
+            try:
+                calendar_frame.update_idletasks()
+                req_w = max(calendar_frame.winfo_reqwidth(), 1)
+                req_h = max(calendar_frame.winfo_reqheight(), 1)
+                canvas.configure(scrollregion=(0, 0, req_w, req_h))
+            except tk.TclError:
+                pass
+
+        def resize_viewport(event=None):
+            try:
+                calendar_frame.update_idletasks()
+                req_w = max(calendar_frame.winfo_reqwidth(), 1)
+                # Jangan memaksa window kalender mengikuti viewport.
+                # Lebar kalender harus tetap sebesar tabel sebenarnya supaya
+                # horizontal scroll benar-benar menampilkan kolom tanggal.
+                # Jika tabel lebih kecil dari viewport, barulah isi diperlebar
+                # sampai viewport agar tidak ada ruang aneh.
+                view_w = max(int(event.width) if event is not None else canvas.winfo_width(), 1)
+                canvas.itemconfigure(window_id, width=max(req_w, view_w))
+                canvas.configure(scrollregion=(0, 0, max(req_w, view_w),
+                                               max(calendar_frame.winfo_reqheight(), canvas.winfo_height(), 1)))
+            except (tk.TclError, ValueError, TypeError):
+                pass
+
+        calendar_frame.bind("<Configure>", update_region)
+        canvas.bind("<Configure>", resize_viewport)
+        canvas.bind(
+            "<MouseWheel>",
+            lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"),
+            add="+"
+        )
+        canvas.bind(
+            "<Shift-MouseWheel>",
+            lambda e: canvas.xview_scroll(int(-e.delta / 120), "units"),
+            add="+"
+        )
+        canvas.bind("<Button-4>", lambda e: canvas.yview_scroll(-2, "units"), add="+")
+        canvas.bind("<Button-5>", lambda e: canvas.yview_scroll(2, "units"), add="+")
 
     def buka_kalender_keseluruhan(self):
-        """Buka kalender keseluruhan sebagai jendela global, bukan tab kegiatan."""
-        if (
-            getattr(self, "overall_calendar_window", None) is not None
-            and self.overall_calendar_window.winfo_exists()
-        ):
+        """Buka Kalender Keseluruhan tepat di tengah aplikasi utama."""
+        if getattr(self, "overall_calendar_window", None) is not None and self.overall_calendar_window.winfo_exists():
             self.overall_calendar_window.lift()
             self.overall_calendar_window.focus_force()
-            self.load_kalender_keseluruhan()
+            self.center_window(self.overall_calendar_window, self)
+            try:
+                self.overall_calendar_window.lift()
+                self.overall_calendar_window.focus_force()
+            except Exception:
+                pass
+            self._show_overall_loading_overlay(
+                self.overall_calendar_window,
+                "Memuat ulang Kalender Keseluruhan..."
+            )
+            self.after(120, self._finish_overall_calendar_loading)
             return
 
         win = tk.Toplevel(self)
         self.overall_calendar_window = win
+        self.modernize_window(win, "Kalender Keseluruhan", (700, 450))
         win.title("Kalender Keseluruhan")
-        win.geometry("1500x850")
-        win.minsize(1200, 650)
-        win.transient(self)
+        # Ukuran cukup besar untuk desktop, tetapi tetap aman untuk layar kecil/DPI tinggi.
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        width = min(1500, max(900, int(sw * 0.86)))
+        height = min(850, max(560, int(sh * 0.82)))
+        win.geometry(f"{width}x{height}")
+        win.minsize(700, 450)
+        self.enable_native_window_controls(win)
         win.protocol("WM_DELETE_WINDOW", lambda: self.tutup_kalender_keseluruhan(win))
+        self.center_window(win, self)
 
-        self.build_kalender_keseluruhan(win)
-        self.load_kalender_keseluruhan()
+        # Loading dibuat sebagai overlay DI DALAM window kalender.
+        # Dengan cara ini indikator selalu berada di depan kalender, tidak
+        # terselip di belakang Toplevel, dan tetap terlihat pada DPI tinggi.
+        self.after(80, lambda w=win: self._build_overall_calendar_with_overlay(w))
+
+    def _show_overall_loading_overlay(self, win, text="Memuat Kalender Keseluruhan..."):
+        """Tampilkan loading overlay di dalam window kalender agar pasti terlihat di depan."""
+        try:
+            old = getattr(self, "_overall_loading_overlay", None)
+            if old is not None and old.winfo_exists():
+                old.destroy()
+        except Exception:
+            pass
+
+        overlay = tk.Frame(win, bg="#F8FAFC")
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        overlay.lift()
+
+        card = tk.Frame(overlay, bg="white", padx=34, pady=26,
+                        highlightthickness=1, highlightbackground="#CBD5E1")
+        card.place(relx=0.5, rely=0.5, anchor="center")
+
+        tk.Label(
+            card, text="Memuat Kalender", bg="white", fg=UI_TEXT,
+            font=("Segoe UI", 13, "bold")
+        ).pack(pady=(0, 6))
+
+        label = tk.Label(
+            card, text=text, bg="white", fg=UI_MUTED,
+            font=("Segoe UI", 9)
+        )
+        label.pack(pady=(0, 12))
+
+        spinner = tk.Label(
+            card, text="◐", bg="white", fg="#0F766E",
+            font=("Segoe UI Symbol", 28, "bold")
+        )
+        spinner.pack(pady=(0, 10))
+
+        bar = ttk.Progressbar(card, mode="indeterminate", length=260)
+        bar.pack()
+        bar.start(10)
+
+        self._overall_loading_overlay = overlay
+        self._overall_loading_spinner = spinner
+        self._overall_loading_label = label
+        self._overall_loading_bar = bar
+        self._overall_loading_index = 0
+
+        def animate():
+            try:
+                if not overlay.winfo_exists():
+                    return
+                frames = ("◐", "◓", "◑", "◒")
+                idx = getattr(self, "_overall_loading_index", 0)
+                spinner.config(text=frames[idx % len(frames)])
+                self._overall_loading_index = idx + 1
+                self._overall_loading_job = self.after(90, animate)
+                overlay.lift()
+            except Exception:
+                self._overall_loading_job = None
+
+        self._overall_loading_job = self.after(90, animate)
+        try:
+            win.update_idletasks()
+            win.update()
+        except Exception:
+            pass
+
+    def _hide_overall_loading_overlay(self):
+        try:
+            job = getattr(self, "_overall_loading_job", None)
+            if job is not None:
+                self.after_cancel(job)
+        except Exception:
+            pass
+        self._overall_loading_job = None
+        try:
+            bar = getattr(self, "_overall_loading_bar", None)
+            if bar is not None:
+                bar.stop()
+        except Exception:
+            pass
+        try:
+            overlay = getattr(self, "_overall_loading_overlay", None)
+            if overlay is not None and overlay.winfo_exists():
+                overlay.destroy()
+        except Exception:
+            pass
+        self._overall_loading_overlay = None
+        self._overall_loading_spinner = None
+        self._overall_loading_label = None
+        self._overall_loading_bar = None
+
+    def _build_overall_calendar_with_overlay(self, win):
+        """Bangun shell kalender dahulu, lalu tampilkan overlay sebelum render data."""
+        try:
+            if not win.winfo_exists():
+                return
+            self.build_kalender_keseluruhan(win)
+            win.update_idletasks()
+            self.center_window(win, self)
+            self._show_overall_loading_overlay(win, "Mengambil data penugasan...")
+            # Beri event loop kesempatan menggambar overlay dan menjalankan animasi
+            # sebelum rendering 48 pegawai x 31 tanggal dimulai.
+            self.after(140, lambda w=win: self._render_overall_calendar_after_overlay(w))
+        except Exception:
+            self._hide_overall_loading_overlay()
+            messagebox.showerror(
+                "Kalender Keseluruhan",
+                "Kalender tidak dapat dimuat. Silakan coba lagi.",
+                parent=win
+            )
+
+    def _render_overall_calendar_after_overlay(self, win):
+        try:
+            if not win.winfo_exists():
+                return
+            self.load_kalender_keseluruhan()
+            try:
+                win.lift()
+                win.focus_force()
+            except Exception:
+                pass
+        except Exception:
+            messagebox.showerror(
+                "Kalender Keseluruhan",
+                "Kalender tidak dapat dimuat. Silakan coba lagi.",
+                parent=win
+            )
+        finally:
+            self._hide_overall_loading_overlay()
+
+    def _finish_overall_calendar_loading(self):
+        # Dipertahankan untuk kompatibilitas dengan caller lama.
+        win = getattr(self, "overall_calendar_window", None)
+        if win is not None and win.winfo_exists():
+            self._show_overall_loading_overlay(win, "Memuat ulang Kalender Keseluruhan...")
+            self.after(120, lambda w=win: self._render_overall_calendar_after_overlay(w))
 
     def tutup_kalender_keseluruhan(self, win):
         try:
+            if getattr(self, "_overall_loading_overlay", None) is not None:
+                self._hide_overall_loading_overlay()
             if win.winfo_exists():
                 win.destroy()
         finally:
@@ -3790,6 +5345,8 @@ class App(tk.Tk):
                 "overall_info_kalender",
                 "overall_info_libur",
                 "overall_legend_kegiatan",
+                "overall_legend_canvas",
+                "overall_legend_scroll",
                 "overall_calendar_detail",
             ):
                 if hasattr(self, attr):
@@ -3808,11 +5365,15 @@ class App(tk.Tk):
 
         win = tk.Toplevel(self)
         self.data_pegawai_window = win
+        self.modernize_window(win, "Data Pegawai", (1000, 600))
         win.title("Data Pegawai")
         win.geometry("1450x750")
         win.minsize(1100, 600)
+        self.enable_native_window_controls(win)
         win.transient(self)
+        self.enable_native_window_controls(win)
         win.protocol("WM_DELETE_WINDOW", lambda: self.tutup_data_pegawai(win))
+        self.center_window(win, self)
         self.build_pegawai(win)
         self.refresh_data_pegawai()
 
@@ -3832,8 +5393,8 @@ class App(tk.Tk):
         tk.Label(
             parent,
             text="DATA PEGAWAI",
-            bg="#F4F6F8",
-            font=("Segoe UI", 18, "bold")
+            bg=UI_BG,
+            font=("Segoe UI", 17, "bold")
         ).pack(
             anchor="w",
             padx=20,
@@ -3843,8 +5404,8 @@ class App(tk.Tk):
         self.label_jumlah_pegawai = tk.Label(
             parent,
             text="",
-            bg="#F4F6F8",
-            fg="#666666",
+            bg=UI_BG,
+            fg=UI_MUTED,
             font=("Segoe UI", 10)
         )
         self.label_jumlah_pegawai.pack(
@@ -3855,7 +5416,7 @@ class App(tk.Tk):
         # =====================================================
         # TOOLBAR DATA PEGAWAI
         # =====================================================
-        toolbar = tk.Frame(parent, bg="#F4F6F8")
+        toolbar = tk.Frame(parent, bg=UI_BG)
         toolbar.pack(fill="x", padx=20, pady=(12, 5))
 
         ttk.Button(
@@ -3911,13 +5472,13 @@ class App(tk.Tk):
         # =====================================================
         # SEARCH DATA PEGAWAI
         # =====================================================
-        search_frame = tk.Frame(parent, bg="#F4F6F8")
+        search_frame = tk.Frame(parent, bg=UI_BG)
         search_frame.pack(fill="x", padx=20, pady=(5, 5))
 
         tk.Label(
             search_frame,
             text="Cari Pegawai:",
-            bg="#F4F6F8",
+            bg=UI_BG,
             font=("Segoe UI", 10, "bold")
         ).pack(side="left", padx=(0, 8))
 
@@ -3947,6 +5508,7 @@ class App(tk.Tk):
         frame.pack(fill="both", expand=True, padx=20, pady=15)
 
         columns = (
+            "no",
             "nama",
             "nip",
             "pangkat",
@@ -3965,6 +5527,7 @@ class App(tk.Tk):
         )
 
         heads = {
+            "no": "No.",
             "nama": "Nama",
             "nip": "NIP",
             "pangkat": "Pangkat",
@@ -3976,6 +5539,7 @@ class App(tk.Tk):
         }
 
         widths = {
+            "no": 58,
             "nama": 280,
             "nip": 185,
             "pangkat": 170,
@@ -3997,15 +5561,30 @@ class App(tk.Tk):
         self.table_pegawai.column("nama", anchor="w")
         self.table_pegawai.column("jabatan", anchor="w")
 
-        self.table_pegawai.pack(side="left", fill="both", expand=True)
+        # Gunakan grid untuk memastikan scrollbar tidak pernah tertutup oleh
+        # Treeview (pack + expand sebelumnya dapat membuat scrollbar tampak hilang
+        # pada DPI tinggi). Scrollbar dibuat lebih tebal agar mudah terlihat.
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        self.table_pegawai.grid(row=0, column=0, sticky="nsew")
 
-        scroll = ttk.Scrollbar(
-            frame,
-            orient="vertical",
-            command=self.table_pegawai.yview
+        scroll = tk.Scrollbar(
+            frame, orient="vertical", command=self.table_pegawai.yview,
+            width=18, bg="#94A3B8", troughcolor="#E2E8F0",
+            activebackground="#64748B", relief="flat", bd=0
         )
-        scroll.pack(side="right", fill="y")
-        self.table_pegawai.configure(yscrollcommand=scroll.set)
+        scroll.grid(row=0, column=1, sticky="ns")
+        scroll_x = tk.Scrollbar(
+            frame, orient="horizontal", command=self.table_pegawai.xview,
+            width=18, bg="#94A3B8", troughcolor="#E2E8F0",
+            activebackground="#64748B", relief="flat", bd=0
+        )
+        scroll_x.grid(row=1, column=0, sticky="ew")
+        self.table_pegawai.configure(yscrollcommand=scroll.set, xscrollcommand=scroll_x.set)
+        self.modernize_tree(self.table_pegawai)
+        # Scroll tabel dengan wheel / Shift+wheel tanpa harus tepat di scrollbar.
+        self.table_pegawai.bind("<MouseWheel>", lambda e: self.table_pegawai.yview_scroll(int(-e.delta / 120), "units"), add="+")
+        self.table_pegawai.bind("<Shift-MouseWheel>", lambda e: self.table_pegawai.xview_scroll(int(-e.delta / 120), "units"), add="+")
 
         # Double-click baris = edit.
         self.table_pegawai.bind(
@@ -4082,27 +5661,31 @@ class App(tk.Tk):
                 return
 
         win = tk.Toplevel(parent)
+        self.enable_native_window_controls(win)
         win.title("Edit Pegawai" if edit_mode else "Tambah Pegawai")
         win.geometry("560x560")
         win.minsize(500, 500)
         win.transient(parent)
+        self.enable_native_window_controls(win)
         win.grab_set()
+        self.enable_native_window_controls(win)
+        self.center_window(win, parent)
 
-        outer = tk.Frame(win, bg="#F4F6F8")
+        outer = tk.Frame(win, bg=UI_BG)
         outer.pack(fill="both", expand=True)
 
         tk.Label(
             outer,
             text="EDIT DATA PEGAWAI" if edit_mode else "TAMBAH DATA PEGAWAI",
-            bg="#F4F6F8",
-            font=("Segoe UI", 16, "bold")
+            bg=UI_BG,
+            font=("Segoe UI Semibold", 14)
         ).pack(anchor="w", padx=25, pady=(20, 5))
 
         tk.Label(
             outer,
             text="Isi data pegawai. Tarif disimpan sebagai tarif aktual pegawai.",
-            bg="#F4F6F8",
-            fg="#666666",
+            bg=UI_BG,
+            fg=UI_MUTED,
             font=("Segoe UI", 9)
         ).pack(anchor="w", padx=25, pady=(0, 15))
 
@@ -4150,7 +5733,7 @@ class App(tk.Tk):
             form,
             text="Golongan Utama",
             bg="white",
-            fg="#666666",
+            fg=UI_MUTED,
             font=("Segoe UI", 9)
         ).grid(row=len(fields), column=0, sticky="w", padx=18, pady=(5, 14))
 
@@ -4159,7 +5742,7 @@ class App(tk.Tk):
             form,
             textvariable=gol_utama_var,
             bg="white",
-            fg="#333333",
+            fg=UI_TEXT,
             font=("Segoe UI", 10, "bold")
         ).grid(row=len(fields), column=1, sticky="w", padx=(0, 18), pady=(5, 14))
 
@@ -4269,7 +5852,7 @@ class App(tk.Tk):
                 conn.rollback()
                 messagebox.showerror(
                     "Data Pegawai",
-                    f"Gagal menyimpan data pegawai.\n\n{exc}",
+                    "Data pegawai gagal disimpan. Periksa kembali isian lalu coba lagi.",
                     parent=win
                 )
                 return
@@ -4286,7 +5869,7 @@ class App(tk.Tk):
             self.load_kalender()
             self.load_kalender_keseluruhan()
 
-        button_frame = tk.Frame(outer, bg="#F4F6F8")
+        button_frame = tk.Frame(outer, bg=UI_BG)
         button_frame.pack(fill="x", padx=25, pady=(0, 20))
 
         ttk.Button(
@@ -4303,6 +5886,10 @@ class App(tk.Tk):
         entries["nama"].focus_set()
         win.bind("<Escape>", lambda event: (win.grab_release(), win.destroy()))
         win.bind("<Return>", lambda event: simpan())
+        self.fit_popup(
+            win, parent,
+            min_width=520, min_height=520, max_width=760, max_height=760
+        )
 
     def aktifkan_pegawai_terpilih(self):
         pegawai_id = self._pegawai_terpilih_id()
@@ -4341,7 +5928,7 @@ class App(tk.Tk):
             conn.rollback()
             messagebox.showerror(
                 "Aktifkan Pegawai",
-                f"Gagal mengaktifkan pegawai.\n\n{exc}",
+                "Pegawai gagal diaktifkan. Silakan coba lagi.",
                 parent=getattr(self, "data_pegawai_window", self)
             )
             return
@@ -4423,7 +6010,7 @@ class App(tk.Tk):
             conn.rollback()
             messagebox.showerror(
                 "Hapus Pegawai",
-                f"Gagal menonaktifkan pegawai.\n\n{exc}",
+                "Pegawai gagal dinonaktifkan. Silakan coba lagi.",
                 parent=getattr(self, "data_pegawai_window", self)
             )
             return
@@ -4513,7 +6100,7 @@ class App(tk.Tk):
             conn.rollback()
             messagebox.showerror(
                 "Hapus Permanen Gagal",
-                f"Pegawai gagal dihapus permanen.\n\n{exc}",
+                "Pegawai gagal dihapus permanen. Silakan coba lagi.",
                 parent=parent
             )
             return
@@ -4577,7 +6164,7 @@ class App(tk.Tk):
             messagebox.showerror(
                 "Import Excel",
                 "File Excel tidak dapat dibaca.\n\n"
-                f"{exc}",
+                "Proses tidak dapat diselesaikan. Silakan coba lagi.",
                 parent=parent
             )
             return
@@ -4811,7 +6398,7 @@ class App(tk.Tk):
             conn.rollback()
             messagebox.showerror(
                 "Import Excel Gagal",
-                f"Import gagal dan perubahan dibatalkan.\n\n{exc}",
+                "Import gagal dan tidak ada perubahan yang disimpan. Periksa file lalu coba lagi.",
                 parent=parent
             )
             return
@@ -4894,7 +6481,7 @@ class App(tk.Tk):
         finally:
             conn.close()
 
-        nomor_baris = 0
+        nomor_baris = 1
         for p in semua_pegawai:
             aktif = int(p[8] or 0) == 1
             if not aktif and not tampil_nonaktif:
@@ -4918,8 +6505,7 @@ class App(tk.Tk):
                 {"bulan_ini": 0, "total": 0}
             )
 
-            tag = "baris1" if nomor_baris % 2 == 0 else "baris2"
-            nomor_baris += 1
+            tag = "baris1" if nomor_baris % 2 == 1 else "baris2"
             if not aktif:
                 tag = "nonaktif"
 
@@ -4928,6 +6514,7 @@ class App(tk.Tk):
                 "end",
                 iid=str(pegawai_id),
                 values=(
+                    nomor_baris,
                     p[1],
                     p[2],
                     p[3],
@@ -4939,6 +6526,7 @@ class App(tk.Tk):
                 ),
                 tags=(tag,)
             )
+            nomor_baris += 1
 
     # =====================================================
     # EXPORT EXCEL
@@ -4981,7 +6569,7 @@ class App(tk.Tk):
                     cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                     cell.border = border
             ws.row_dimensions[header_row].height = 28
-            ws.freeze_panes = f"A{header_row + 1}"
+            ws.freeze_panes = None
             ws.auto_filter.ref = f"A{header_row}:{get_column_letter(ws.max_column)}{ws.max_row}"
 
         for row in ws.iter_rows():
@@ -4995,289 +6583,995 @@ class App(tk.Tk):
             for col, width in widths.items():
                 ws.column_dimensions[col].width = width
 
+    def _add_excel_table(self, ws, ref, name):
+        """Tambahkan Excel Table dengan referensi yang valid dan nama unik.
+
+        Tabel hanya dibuat jika memiliki minimal satu baris data selain header.
+        Ini mencegah Excel menampilkan pesan Repair pada workbook tertentu.
+        """
+        if Table is None or TableStyleInfo is None:
+            return
+        try:
+            # Ref berbentuk A7:M20 -> pastikan baris akhir lebih besar dari header.
+            m = re.match(r"^[A-Z]+(\d+):[A-Z]+(\d+)$", str(ref))
+            if not m or int(m.group(2)) <= int(m.group(1)):
+                return
+
+            # Nama tabel Excel harus unik dalam satu workbook dan hanya memakai
+            # karakter yang aman.
+            safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(name))
+            if not safe_name or safe_name[0].isdigit():
+                safe_name = "tbl_" + safe_name
+            existing = {t.name for ws0 in ws.parent.worksheets for t in getattr(ws0, "tables", {}).values()}
+            base = safe_name
+            n = 2
+            while safe_name in existing:
+                safe_name = f"{base}_{n}"
+                n += 1
+
+            table = Table(displayName=safe_name, ref=ref)
+            table.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium2",
+                showFirstColumn=False,
+                showLastColumn=False,
+                showRowStripes=True,
+                showColumnStripes=False,
+            )
+            # openpyxl akan membuat AutoFilter tabel sendiri; jangan membuat
+            # AutoFilter sheet kedua pada rentang yang sama.
+            ws.add_table(table)
+        except Exception:
+            # Export tetap dapat dibuka walaupun Excel Table tidak dapat dibuat.
+            pass
+
+    def _get_export_target_summary(self, conn, bagian_id, periode_id):
+        """Ambil target turun + realisasi + uang untuk satu kegiatan."""
+        row = conn.execute(
+            "SELECT COALESCE(komposisi_target, '') FROM bagian WHERE id=?",
+            (bagian_id,)
+        ).fetchone()
+        target = {}
+        target_tarif = {}
+        try:
+            stored = json.loads(row[0]) if row and row[0] else {}
+            if isinstance(stored, dict) and "target" in stored:
+                target = {str(k): int(v) for k, v in (stored.get("target") or {}).items()}
+                target_tarif = {str(k): int(v) for k, v in (stored.get("tarif") or {}).items()}
+            elif isinstance(stored, dict):
+                target = {str(k): int(v) for k, v in stored.items()}
+        except Exception:
+            target, target_tarif = {}, {}
+
+        # Kelompok realisasi berdasarkan tarif. Golongan dengan tarif sama
+        # memang harus dihitung sebagai satu kelompok target.
+        actual_rows = conn.execute(
+            """SELECT p.tarif, COUNT(*), COALESCE(SUM(p.tarif),0)
+               FROM jadwal j JOIN pegawai p ON p.id=j.pegawai_id
+               WHERE j.periode_id=? AND j.bagian_id=?
+               GROUP BY p.tarif""",
+            (periode_id, bagian_id)
+        ).fetchall()
+        actual = {int(t or 0): (int(n), int(u or 0)) for t, n, u in actual_rows}
+
+        details = []
+        total_target_uang = 0
+        total_target_turun = 0
+        total_realisasi_turun = 0
+        total_realisasi_uang = sum(v[1] for v in actual.values())
+        for label, jumlah in sorted(target.items()):
+            tarif = int(target_tarif.get(label, 0))
+            subtotal = int(jumlah) * tarif
+            got, uang = actual.get(tarif, (0, 0))
+            kurang = max(0, int(jumlah) - got)
+            lebih = max(0, got - int(jumlah))
+            details.append({
+                "label": label, "target": int(jumlah), "tarif": tarif,
+                "target_uang": subtotal, "realisasi": got,
+                "realisasi_uang": uang, "kurang": kurang, "lebih": lebih
+            })
+            total_target_turun += int(jumlah)
+            total_target_uang += subtotal
+
+        total_realisasi_turun = sum(v[0] for v in actual.values())
+        return {
+            "details": details,
+            "target_turun": total_target_turun,
+            "target_uang": total_target_uang,
+            "realisasi_turun": total_realisasi_turun,
+            "realisasi_uang": total_realisasi_uang,
+        }
+
     def _export_calendar_sheet(self, wb, conn, bulan, tahun, periode_id):
+        """Export kalender keseluruhan lengkap dengan desa + ringkasan uang/target."""
         ws = wb.active
         ws.title = "Kalender Keseluruhan"
-        ws.sheet_view.zoomScale = 80
+        ws.sheet_view.zoomScale = 60
+        ws.sheet_view.showGridLines = False
 
         jumlah_hari = calendar.monthrange(tahun, bulan)[1]
         hari_libur = load_hari_libur(periode_id)
 
         kegiatan_rows = conn.execute(
-            """
-            SELECT id, kode, COALESCE(nama_bagian, ''), COALESCE(kegiatan, ''),
-                   COALESCE(lokasi, ''), COALESCE(dana, 0), penanggung_jawab_id
-            FROM bagian
-            WHERE periode_id = ?
-            ORDER BY id
-            """,
-            (periode_id,)
+            """SELECT id, kode, COALESCE(nama_bagian,''), COALESCE(kegiatan,''),
+                      COALESCE(dana,0)
+               FROM bagian WHERE periode_id=? ORDER BY id""", (periode_id,)
         ).fetchall()
-
-        jadwal_rows = conn.execute(
-            """
-            SELECT j.pegawai_id, j.hari, b.kode, COALESCE(b.nama_bagian, '')
-            FROM jadwal j
-            JOIN bagian b ON b.id = j.bagian_id
-            WHERE j.periode_id = ?
-            ORDER BY j.pegawai_id, j.hari
-            """,
-            (periode_id,)
-        ).fetchall()
-
         pegawai_rows = conn.execute(
-            """
-            SELECT id, nama, nip, pangkat, golongan_asli, jabatan, tarif
-            FROM pegawai
-            WHERE aktif = 1
-            ORDER BY nama
-            """
+            "SELECT id,nama,nip,pangkat,golongan_asli,jabatan,tarif FROM pegawai WHERE aktif=1 ORDER BY nama"
+        ).fetchall()
+        jadwal_rows = conn.execute(
+            """SELECT j.pegawai_id,j.hari,j.bagian_id,b.kode,COALESCE(b.nama_bagian,''),COALESCE(d.nama,'')
+               FROM jadwal j JOIN bagian b ON b.id=j.bagian_id
+               LEFT JOIN desa d ON d.id=j.desa_id
+               WHERE j.periode_id=? ORDER BY j.pegawai_id,j.hari""", (periode_id,)
         ).fetchall()
 
-        nama_kegiatan = {
-            row[1]: (row[2].strip() if row[2] else "") or f"Kegiatan {row[1]}"
-            for row in kegiatan_rows
-        }
-        jadwal_map = {(r[0], r[1]): (r[2], nama_kegiatan.get(r[2], f"Kegiatan {r[2]}")) for r in jadwal_rows}
+        nama_kegiatan = {r[1]: (r[2] or '').strip() or f"Kegiatan {r[1]}" for r in kegiatan_rows}
+        jadwal_map = {(r[0],r[1]): {"kode":r[3],"nama":nama_kegiatan.get(r[3],f"Kegiatan {r[3]}"),"desa":(r[5] or '').strip()} for r in jadwal_rows}
 
-        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=jumlah_hari + 1)
-        ws.cell(1, 1, f"PENUGASAN {NAMA_BULAN[bulan].upper()} {tahun}")
-        ws.cell(1, 1).font = Font(size=16, bold=True, color="FFFFFF")
-        ws.cell(1, 1).fill = PatternFill("solid", fgColor="17324D")
-        ws.cell(1, 1).alignment = Alignment(horizontal="center", vertical="center")
-        ws.row_dimensions[1].height = 32
+        total_dana = sum(int(r[4] or 0) for r in kegiatan_rows)
+        total_target_turun = total_target_uang = total_real_turun = total_real_uang = 0
+        target_blocks=[]
+        for r in kegiatan_rows:
+            summary=self._get_export_target_summary(conn,r[0],periode_id)
+            total_target_turun += summary["target_turun"]
+            total_target_uang += summary["target_uang"]
+            total_real_turun += summary["realisasi_turun"]
+            total_real_uang += summary["realisasi_uang"]
+            target_blocks.append((r[1], (r[2] or '').strip() or f"Kegiatan {r[1]}", summary))
 
-        ws.cell(2, 1, "Nama Pegawai")
-        ws.cell(2, 1).font = Font(bold=True, color="FFFFFF")
-        ws.cell(2, 1).fill = PatternFill("solid", fgColor="17324D")
-        ws.cell(2, 1).alignment = Alignment(horizontal="center", vertical="center")
+        # Ringkasan sebelum tabel kalender.
+        ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=jumlah_hari+1)
+        ws.cell(1,1,f"KALENDER PENUGASAN {NAMA_BULAN[bulan].upper()} {tahun}")
+        ws.cell(1,1).font=Font(size=16,bold=True,color="FFFFFF")
+        ws.cell(1,1).fill=PatternFill("solid",fgColor="17324D")
+        ws.cell(1,1).alignment=Alignment(horizontal="center",vertical="center")
+        ws.row_dimensions[1].height=32
 
-        nama_hari = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
-        for hari in range(1, jumlah_hari + 1):
-            tanggal = datetime(tahun, bulan, hari)
-            ws.cell(2, hari + 1, f"{hari}\n{nama_hari[tanggal.weekday()]}")
-            ws.cell(2, hari + 1).font = Font(bold=True, color="FFFFFF")
-            ws.cell(2, hari + 1).fill = PatternFill("solid", fgColor="17324D")
-            ws.cell(2, hari + 1).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ws.row_dimensions[2].height = 32
+        summary_lines=[
+            ("TOTAL DANA SELURUH KEGIATAN", total_dana),
+            ("TOTAL TARGET TURUN", total_target_turun),
+            ("TOTAL TARGET UANG", total_target_uang),
+            ("TOTAL REALISASI TURUN", total_real_turun),
+            ("TOTAL UANG REALISASI", total_real_uang),
+            ("SELISIH DANA", total_dana-total_real_uang),
+        ]
+        for i,(label,val) in enumerate(summary_lines,start=2):
+            ws.cell(i,1,label).font=Font(bold=True)
+            ws.cell(i,1).fill=PatternFill("solid",fgColor="D9E6F2")
+            ws.cell(i,2,val)
+            if "TURUN" not in label:
+                ws.cell(i,2).number_format='#,##0'
+            if "DANA" in label or "UANG" in label or "SELISIH" in label:
+                ws.cell(i,2).number_format='"Rp "#,##0'
 
-        palette = ["B8D4EF", "C7E6C5", "F3D6A5", "D9C2E9", "F4B8B8", "BFE3E3", "E7D6A8", "C9D7B8", "D5C4A1", "C7D4F2", "E5C1CD", "CDE4C8"]
-        fills = {row[1]: PatternFill("solid", fgColor=palette[i % len(palette)]) for i, row in enumerate(kegiatan_rows)}
-        holiday_fill = PatternFill("solid", fgColor="ECECEC")
-        thin = Side(style="thin", color="D9D9D9")
-        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        # Rincian target tiap kegiatan.
+        row=9
+        ws.cell(row,1,"RINGKASAN TARGET KOMPOSISI PER KEGIATAN").font=Font(bold=True,size=11)
+        row+=1
+        for kode,nama,summary in target_blocks:
+            ws.cell(row,1,f"{kode} - {nama}").font=Font(bold=True)
+            row+=1
+            if summary["details"]:
+                for d in summary["details"]:
+                    status = "terpenuhi" if d["kurang"]==0 and d["lebih"]==0 else (f"kurang {d['kurang']} turun" if d["kurang"] else f"lebih {d['lebih']} turun")
+                    ws.cell(row,1,f"Gol {d['label']}")
+                    ws.cell(row,2,d["target"]); ws.cell(row,3,d["tarif"]); ws.cell(row,4,d["target_uang"])
+                    ws.cell(row,5,d["realisasi"]); ws.cell(row,6,d["realisasi_uang"]); ws.cell(row,7,status)
+                    ws.cell(row,3).number_format='"Rp "#,##0'; ws.cell(row,4).number_format='"Rp "#,##0'; ws.cell(row,6).number_format='"Rp "#,##0'
+                    row+=1
+            else:
+                ws.cell(row,1,"Belum ada target komposisi")
+                row+=1
+            row+=1
 
-        for r_idx, pegawai in enumerate(pegawai_rows, start=3):
-            ws.cell(r_idx, 1, pegawai[1] or "Tanpa Nama")
-            ws.cell(r_idx, 1).alignment = Alignment(vertical="center", wrap_text=True)
-            ws.cell(r_idx, 1).border = border
-            for hari in range(1, jumlah_hari + 1):
-                cell = ws.cell(r_idx, hari + 1)
-                tanggal = datetime(tahun, bulan, hari)
-                detail = jadwal_map.get((pegawai[0], hari))
-                if tanggal.weekday() == 6 or hari in hari_libur:
-                    cell.value = "LIBUR"
-                    cell.fill = holiday_fill
+        table_header = max(row+1, 12)
+        ws.cell(table_header,1,"Nama Pegawai")
+        nama_hari=["Sen","Sel","Rab","Kam","Jum","Sab","Min"]
+        for hari in range(1,jumlah_hari+1):
+            dt=datetime(tahun,bulan,hari)
+            ws.cell(table_header,hari+1,f"{hari}\n{nama_hari[dt.weekday()]}")
+        for cell in ws[table_header]:
+            if cell.value is not None:
+                cell.font=Font(bold=True,color="FFFFFF"); cell.fill=PatternFill("solid",fgColor="17324D")
+                cell.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
+        ws.row_dimensions[table_header].height=32
+
+        palette=["B8D4EF","C7E6C5","F3D6A5","D9C2E9","F4B8B8","BFE3E3","E7D6A8","C9D7B8"]
+        fills={r[1]:PatternFill("solid",fgColor=palette[i%len(palette)]) for i,r in enumerate(kegiatan_rows)}
+        holiday_fill=PatternFill("solid",fgColor="ECECEC")
+        thin=Side(style="thin",color="D9D9D9"); border=Border(left=thin,right=thin,top=thin,bottom=thin)
+        for ri,p in enumerate(pegawai_rows,start=table_header+1):
+            ws.cell(ri,1,p[1] or "Tanpa Nama")
+            for hari in range(1,jumlah_hari+1):
+                c=ws.cell(ri,hari+1); dt=datetime(tahun,bulan,hari); detail=jadwal_map.get((p[0],hari))
+                if dt.weekday()==6 or hari in hari_libur:
+                    c.value="LIBUR"; c.fill=holiday_fill
                 elif detail:
-                    cell.value = f"{detail[0]} - {detail[1]}"
-                    cell.fill = fills.get(detail[0], PatternFill("solid", fgColor="FFFFFF"))
-                else:
-                    cell.value = ""
-                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                cell.border = border
+                    c.value=f"{detail['kode']} - {detail['nama']}\nDesa: {detail['desa'] or 'Desa belum ditentukan'}"; c.fill=fills.get(detail['kode'],PatternFill("solid",fgColor="FFFFFF"))
+                c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True); c.border=border
+            ws.cell(ri,1).border=border; ws.cell(ri,1).alignment=Alignment(vertical="center",wrap_text=True)
 
-        legend_start = len(pegawai_rows) + 5
-        ws.cell(legend_start, 1, "Keterangan Kegiatan")
-        ws.cell(legend_start, 1).font = Font(bold=True)
-        for i, row in enumerate(kegiatan_rows, start=1):
-            cell = ws.cell(legend_start + i, 1, f"{row[1]} - {nama_kegiatan[row[1]]}")
-            cell.fill = fills[row[1]]
-            cell.border = border
-        ws.cell(legend_start + len(kegiatan_rows) + 1, 1, "LIBUR = Minggu atau hari libur manual")
-        ws.cell(legend_start + len(kegiatan_rows) + 1, 1).fill = holiday_fill
-        ws.freeze_panes = "B3"
-        ws.column_dimensions["A"].width = 28
-        for col in range(2, jumlah_hari + 2):
-            ws.column_dimensions[get_column_letter(col)].width = 13
-        ws.auto_filter.ref = f"A2:{get_column_letter(jumlah_hari + 1)}{max(2, len(pegawai_rows) + 2)}"
-        ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
-        ws.page_setup.fitToPage = True
-        ws.page_setup.fitToWidth = 1
-        ws.print_title_rows = "1:2"
+        end=max(table_header,table_header+len(pegawai_rows))
+        self._add_excel_table(ws,f"A{table_header}:{get_column_letter(jumlah_hari+1)}{end}","tblKalenderKeseluruhan")
+        ws.freeze_panes=None
+        ws.column_dimensions["A"].width=28
+        for col in range(2,jumlah_hari+2): ws.column_dimensions[get_column_letter(col)].width=14
+        ws.page_setup.orientation=ws.ORIENTATION_LANDSCAPE
+        ws.page_setup.fitToPage=True; ws.page_setup.fitToWidth=1; ws.page_setup.fitToHeight=0
+        ws.sheet_properties.pageSetUpPr.fitToPage=True
 
     def _export_data_pegawai_sheet(self, wb, conn):
+        """Export data pegawai lengkap dengan total turun dan rincian kegiatan/desa."""
         ws = wb.create_sheet("Data Pegawai")
-        ws.sheet_view.zoomScale = 90
-        ws.append(["Nama", "NIP", "Pangkat", "Golongan", "Golongan Utama", "Jabatan", "Tarif", "Status", "Turun Bulan Ini"])
+        ws.sheet_view.zoomScale = 75
+        headers = [
+            "Nama", "NIP", "Pangkat", "Golongan", "Golongan Utama", "Jabatan",
+            "Tarif", "Status", "Turun Bulan Ini", "Total Uang Bulan Ini", "Kegiatan", "Tanggal", "Desa"
+        ]
+        ws.append(headers)
 
-        riwayat = load_riwayat_turun(self.periode_id)
         rows = conn.execute(
             """
             SELECT id, nama, nip, pangkat, golongan_asli, golongan_utama, jabatan, tarif, aktif
-            FROM pegawai
-            ORDER BY nama
+            FROM pegawai ORDER BY nama
             """
         ).fetchall()
         for p in rows:
-            r = riwayat.get(p[0], {"bulan_ini": 0})
+            detail = conn.execute(
+                """
+                SELECT b.kode, COALESCE(b.nama_bagian,''), j.hari, COALESCE(d.nama,'')
+                FROM jadwal j
+                JOIN bagian b ON b.id=j.bagian_id
+                LEFT JOIN desa d ON d.id=j.desa_id
+                WHERE j.pegawai_id=? AND j.periode_id=?
+                ORDER BY j.hari, b.id
+                """, (p[0], self.periode_id)
+            ).fetchall()
+            kegiatan = "; ".join(
+                f"{r[0]} - {(r[1] or f'Kegiatan {r[0]}')}" for r in detail
+            )
+            tanggal = ", ".join(str(r[2]) for r in detail) or "-"
+            desa = "; ".join(
+                f"Tgl {r[2]}: {r[3] or 'Belum ditentukan'}" for r in detail
+            ) or "-"
             ws.append([
                 p[1], p[2], p[3], p[4], p[5], p[6], p[7],
-                "Aktif" if p[8] else "Nonaktif",
-                r["bulan_ini"]
+                "Aktif" if p[8] else "Nonaktif", len(detail), len(detail) * int(p[7] or 0), kegiatan, tanggal, desa
             ])
+
         for cell in ws[1]:
-            cell.number_format = "@" if cell.column in (2,) else cell.number_format
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="17324D")
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         for row in ws.iter_rows(min_row=2, min_col=7, max_col=7):
             row[0].number_format = '#,##0'
-        self._format_excel_sheet(ws, header_row=1, widths={"A": 30, "B": 20, "C": 18, "D": 12, "E": 16, "F": 28, "G": 14, "H": 12, "I": 18})
+        for row in ws.iter_rows(min_row=2, min_col=10, max_col=10):
+            row[0].number_format = '"Rp "#,##0'
+        self._format_excel_sheet(
+            ws, header_row=1,
+            widths={"A":30,"B":20,"C":18,"D":12,"E":16,"F":28,"G":14,"H":12,"I":18,"J":20,"K":35,"L":18,"M":45}
+        )
+        ws.freeze_panes = None
+        ws.auto_filter.ref = None
+        self._add_excel_table(ws, f"A1:{get_column_letter(ws.max_column)}{ws.max_row}", "tblDataPegawai")
 
-    def _export_kegiatan_sheet(self, wb, conn, bagian, bulan, tahun):
-        bagian_id, kode, nama_bagian, deskripsi, lokasi, dana, pj_id = bagian
-        judul = (nama_bagian or "").strip() or f"Kegiatan {kode}"
+    def _export_data_desa_sheet(self, wb, conn, bulan, tahun, periode_id):
+        """Export master desa + penggunaan desa pada periode aktif."""
+        ws = wb.create_sheet("Data Desa")
+        ws.sheet_view.zoomScale = 80
+        headers = ["Nama Desa", "Status", "Dipakai Bulan Ini", "Tanggal", "Kegiatan", "Pegawai"]
+        ws.append(headers)
+        rows = conn.execute(
+            """
+            SELECT d.id, d.nama, d.aktif,
+                   COUNT(DISTINCT j.hari) AS jumlah,
+                   GROUP_CONCAT(DISTINCT j.hari) AS tanggal
+            FROM desa d
+            LEFT JOIN jadwal j ON j.desa_id=d.id AND j.periode_id=?
+            GROUP BY d.id, d.nama, d.aktif
+            ORDER BY d.nama COLLATE NOCASE
+            """, (periode_id,)
+        ).fetchall()
+        for did, nama, aktif, jumlah, tanggal in rows:
+            detail = conn.execute(
+                """
+                SELECT j.hari, b.kode, COALESCE(b.nama_bagian,''), p.nama
+                FROM jadwal j
+                JOIN bagian b ON b.id=j.bagian_id
+                JOIN pegawai p ON p.id=j.pegawai_id
+                WHERE j.desa_id=? AND j.periode_id=?
+                ORDER BY j.hari, b.id, p.nama
+                """, (did, periode_id)
+            ).fetchall()
+            kegiatan = "; ".join(
+                f"Tgl {r[0]}: {r[1]} - {(r[2] or f'Kegiatan {r[1]}')}" for r in detail
+            ) or "-"
+            pegawai = "; ".join(
+                f"Tgl {r[0]}: {r[3]}" for r in detail
+            ) or "-"
+            ws.append([
+                nama, "Aktif" if aktif else "Nonaktif", jumlah or 0,
+                ", ".join(sorted({str(r[0]) for r in detail}, key=lambda x:int(x))) or "-",
+                kegiatan, pegawai
+            ])
+        self._format_excel_sheet(
+            ws, header_row=1,
+            widths={"A":30,"B":12,"C":20,"D":18,"E":55,"F":55}
+        )
+        ws.freeze_panes = None
+        ws.auto_filter.ref = ws.dimensions
+
+    def _export_kegiatan_gabungan_sheet(self, wb, conn, bagian, bulan, tahun, periode_id):
+        """Satu sheet per kegiatan: data kegiatan di atas, kalender kegiatan di bawah."""
+        bagian_id, kode, nama_bagian, deskripsi, dana, pj_id = bagian
+        judul = (nama_bagian or '').strip() or f"Kegiatan {kode}"
         sheet_name = self._excel_unique_sheet_name(wb, judul)
         ws = wb.create_sheet(sheet_name)
-        ws.sheet_view.zoomScale = 90
+        ws.sheet_view.zoomScale = 70
+        ws.sheet_view.showGridLines = False
 
-        pj_row = conn.execute("SELECT nama FROM pegawai WHERE id = ?", (pj_id,)).fetchone() if pj_id else None
-        pj_nama = pj_row[0] if pj_row else "-"
+        jumlah_hari = calendar.monthrange(tahun, bulan)[1]
+        hari_libur = load_hari_libur(periode_id)
+        pj = conn.execute("SELECT nama FROM pegawai WHERE id=?", (pj_id,)).fetchone() if pj_id else None
+        pj_nama = pj[0] if pj else "-"
 
+        # =====================================================
+        # BAGIAN 1 — DATA KEGIATAN
+        # =====================================================
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=13)
+        ws.cell(1, 1, f"KEGIATAN {judul.upper()} — {NAMA_BULAN[bulan]} {tahun}")
+        ws.cell(1, 1).font = Font(size=16, bold=True, color="FFFFFF")
+        ws.cell(1, 1).fill = PatternFill("solid", fgColor="17324D")
+        ws.cell(1, 1).alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[1].height = 30
+
+        summary = self._get_export_target_summary(conn, bagian_id, periode_id)
         metadata = [
-            ("Kegiatan", judul),
-            ("Kode", kode),
-            ("Deskripsi", deskripsi or ""),
-            ("Lokasi", lokasi or ""),
-            ("Dana Bulanan", dana or 0),
             ("Penanggung Jawab", pj_nama),
+            ("Deskripsi", deskripsi or ""),
+            ("Dana Bulanan", dana or 0),
+            ("Target Turun", summary["target_turun"]),
+            ("Target Uang", summary["target_uang"]),
+            ("Realisasi Turun", summary["realisasi_turun"]),
+            ("Uang Realisasi", summary["realisasi_uang"]),
+            ("Kekurangan Turun", max(0, summary["target_turun"]-summary["realisasi_turun"])),
+            ("Sisa Dana", int(dana or 0)-summary["realisasi_uang"]),
             ("Periode", f"{NAMA_BULAN[bulan]} {tahun}"),
         ]
-        for i, (label, value) in enumerate(metadata, start=1):
-            ws.cell(i, 1, label).font = Font(bold=True)
-            ws.cell(i, 2, value)
-            if label == "Dana Bulanan":
-                ws.cell(i, 2).number_format = '#,##0'
-            ws.cell(i, 1).fill = PatternFill("solid", fgColor="D9E6F2")
+        for r, (label, value) in enumerate(metadata, start=2):
+            ws.cell(r, 1, label).font = Font(bold=True)
+            ws.cell(r, 1).fill = PatternFill("solid", fgColor="D9E6F2")
+            ws.cell(r, 2, value)
+            if any(k in label for k in ("Dana", "Uang", "Sisa")):
+                ws.cell(r, 2).number_format = '"Rp "#,##0'
 
-        header_row = 9
-        headers = ["No", "Nama", "NIP", "Pangkat", "Golongan", "Jabatan", "Tarif", "PJ", "Turun"]
-        for c, h in enumerate(headers, start=1):
-            ws.cell(header_row, c, h)
-
-        ws.cell(header_row + 1, 1, "Catatan")
-        ws.cell(header_row + 1, 2, "Kolom Turun hanya menghitung berapa kali pegawai turun pada kegiatan ini di bulan aktif. Jadwal lengkap dapat dilihat di sheet Kalender Keseluruhan.")
-        ws.merge_cells(start_row=header_row + 1, start_column=2, end_row=header_row + 1, end_column=10)
-        ws.cell(header_row + 1, 1).font = Font(bold=True)
-        ws.cell(header_row + 1, 1).fill = PatternFill("solid", fgColor="FFF2CC")
-        ws.cell(header_row + 1, 2).fill = PatternFill("solid", fgColor="FFF2CC")
-        ws.cell(header_row + 1, 2).alignment = Alignment(wrap_text=True, vertical="center")
-        ws.row_dimensions[header_row + 1].height = 36
-
+        target_start = 2
+        target_col = 4
+        ws.cell(target_start, target_col, "TARGET KOMPOSISI TURUN").font = Font(bold=True, size=11)
+        for idx, d in enumerate(summary["details"], start=target_start+1):
+            status = "terpenuhi" if d["kurang"] == 0 and d["lebih"] == 0 else (f"kurang {d['kurang']} turun" if d["kurang"] else f"lebih {d['lebih']} turun")
+            ws.cell(idx, target_col, f"Gol {d['label']}: {d['target']} turun × {d['tarif']}")
+            ws.cell(idx, target_col+1, d["target_uang"])
+            ws.cell(idx, target_col+2, f"Realisasi {d['realisasi']} turun — {status}")
+            ws.cell(idx, target_col+1).number_format = '"Rp "#,##0'
         anggota = conn.execute(
-            """
-            SELECT p.id, p.nama, p.nip, p.pangkat, p.golongan_asli, p.jabatan, p.tarif
-            FROM anggota_bagian ab
-            JOIN pegawai p ON p.id = ab.pegawai_id
-            WHERE ab.bagian_id = ?
-            ORDER BY p.nama
-            """,
-            (bagian_id,)
+            """SELECT p.id,p.nama,p.nip,p.pangkat,p.golongan_asli,p.golongan_utama,p.jabatan,p.tarif
+               FROM anggota_bagian ab JOIN pegawai p ON p.id=ab.pegawai_id
+               WHERE ab.bagian_id=? ORDER BY p.nama""", (bagian_id,)
         ).fetchall()
 
-        for nomor, p in enumerate(anggota, start=1):
-            hari_rows = conn.execute(
-                "SELECT hari FROM jadwal WHERE bagian_id = ? AND pegawai_id = ? ORDER BY hari",
-                (bagian_id, p[0])
-            ).fetchall()
-            hari = [int(x[0]) for x in hari_rows]
-            ws.append([
-                nomor, p[1], p[2], p[3], p[4], p[5], p[6],
-                "Ya" if p[0] == pj_id else "",
-                len(hari)
-            ])
-
+        header_data = max(13, 5 + len(summary["details"]))
+        headers = ["No", "Nama", "NIP", "Pangkat", "Golongan", "Golongan Utama", "Jabatan", "Tarif", "PJ", "Turun", "Total Uang", "Tanggal", "Desa"]
+        for c, h in enumerate(headers, start=1):
+            ws.cell(header_data, c, h)
         self._format_excel_sheet(
-            ws,
-            header_row=header_row,
-            widths={"A": 7, "B": 30, "C": 20, "D": 18, "E": 12, "F": 28, "G": 14, "H": 8, "I": 12}
+            ws, header_row=header_data,
+            widths={"A":6,"B":27,"C":20,"D":16,"E":12,"F":16,"G":25,"H":13,"I":8,"J":9,"K":15,"L":18,"M":42}
         )
-        ws.merge_cells(start_row=3, start_column=2, end_row=3, end_column=10)
-        ws.merge_cells(start_row=4, start_column=2, end_row=4, end_column=10)
-        ws.row_dimensions[3].height = 45
-        ws.row_dimensions[4].height = 30
+
+        for nomor, p in enumerate(anggota, start=1):
+            detail = conn.execute(
+                """SELECT j.hari,COALESCE(d.nama,'') FROM jadwal j
+                   LEFT JOIN desa d ON d.id=j.desa_id
+                   WHERE j.bagian_id=? AND j.pegawai_id=? AND j.periode_id=? ORDER BY j.hari""",
+                (bagian_id, p[0], periode_id)
+            ).fetchall()
+            tanggal = ", ".join(str(r[0]) for r in detail) or "-"
+            desa = "; ".join(f"Tgl {r[0]}: {r[1] or 'Belum ditentukan'}" for r in detail) or "-"
+            turun = len(detail)
+            total = turun * (p[7] or 0)
+            ws.append([nomor, p[1], p[2], p[3], p[4], p[5], p[6], p[7], "Ya" if p[0] == pj_id else "", turun, total, tanggal, desa])
+
+        data_end = max(header_data, ws.max_row)
+        ws.freeze_panes = None
+        for row in ws.iter_rows(min_row=header_data + 1, max_row=data_end):
+            for cell in row:
+                cell.border = Border(left=Side(style="thin", color="D9D9D9"), right=Side(style="thin", color="D9D9D9"), top=Side(style="thin", color="D9D9D9"), bottom=Side(style="thin", color="D9D9D9"))
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+        for row in ws.iter_rows(min_row=header_data + 1, min_col=8, max_col=8):
+            row[0].number_format = '#,##0'
+        for row in ws.iter_rows(min_row=header_data + 1, min_col=11, max_col=11):
+            row[0].number_format = '#,##0'
+        ws.auto_filter.ref = None
+        self._add_excel_table(ws, f"A{header_data}:M{data_end}", f"tblKegiatan{bagian_id}Data")
+
+        # Ringkasan akhir data kegiatan: mudah dibaca tanpa membuka aplikasi.
+        recap_row = data_end + 2
+        ws.cell(recap_row, 1, "RINGKASAN TARGET & REALISASI").font = Font(bold=True, size=11)
+        recap_headers = ["Kelompok Tarif/Golongan", "Target Turun", "Tarif", "Target Uang", "Realisasi Turun", "Realisasi Uang", "Status"]
+        for c,h in enumerate(recap_headers, start=1):
+            ws.cell(recap_row+1,c,h)
+        for rr,d in enumerate(summary["details"], start=recap_row+2):
+            status = "Terpenuhi" if d["kurang"]==0 and d["lebih"]==0 else (f"Kurang {d['kurang']} turun" if d["kurang"] else f"Lebih {d['lebih']} turun")
+            vals=[f"Gol {d['label']}",d["target"],d["tarif"],d["target_uang"],d["realisasi"],d["realisasi_uang"],status]
+            for c,v in enumerate(vals,start=1): ws.cell(rr,c,v)
+            ws.cell(rr,3).number_format='"Rp "#,##0'; ws.cell(rr,4).number_format='"Rp "#,##0'; ws.cell(rr,6).number_format='"Rp "#,##0'
+        total_row=recap_row+2+len(summary["details"])
+        ws.cell(total_row,1,"TOTAL")
+        ws.cell(total_row,2,summary["target_turun"]); ws.cell(total_row,4,summary["target_uang"])
+        ws.cell(total_row,5,summary["realisasi_turun"]); ws.cell(total_row,6,summary["realisasi_uang"])
+        ws.cell(total_row,4).number_format='"Rp "#,##0'; ws.cell(total_row,6).number_format='"Rp "#,##0'
+        ws.cell(total_row+1,1,"DANA BULANAN"); ws.cell(total_row+1,2,dana or 0); ws.cell(total_row+1,2).number_format='"Rp "#,##0'
+        ws.cell(total_row+2,1,"SISA DANA"); ws.cell(total_row+2,2,int(dana or 0)-summary["realisasi_uang"]); ws.cell(total_row+2,2).number_format='"Rp "#,##0'
+        for r in range(recap_row+1,total_row+3):
+            for c in range(1,8):
+                ws.cell(r,c).border=Border(left=Side(style="thin",color="D9D9D9"),right=Side(style="thin",color="D9D9D9"),top=Side(style="thin",color="D9D9D9"),bottom=Side(style="thin",color="D9D9D9"))
+                ws.cell(r,c).alignment=Alignment(vertical="center",wrap_text=True)
+
+        # =====================================================
+        # BAGIAN 2 — KALENDER KEGIATAN, DI BAWAH DATA KEGIATAN
+        # =====================================================
+        gap = 3
+        title_row = total_row + 3
+        ws.merge_cells(start_row=title_row, start_column=1, end_row=title_row, end_column=jumlah_hari + 1)
+        ws.cell(title_row, 1, f"KALENDER {judul.upper()} — {NAMA_BULAN[bulan]} {tahun}")
+        ws.cell(title_row, 1).font = Font(size=15, bold=True, color="FFFFFF")
+        ws.cell(title_row, 1).fill = PatternFill("solid", fgColor="17324D")
+        ws.cell(title_row, 1).alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[title_row].height = 30
+
+        meta_row = title_row + 1
+        ws.cell(meta_row, 1, "Penanggung Jawab").font = Font(bold=True)
+        ws.cell(meta_row, 2, pj_nama)
+        ws.cell(meta_row + 1, 1, "Deskripsi").font = Font(bold=True)
+        ws.cell(meta_row + 1, 2, deskripsi or "")
+
+        header_cal = title_row + 3
+        ws.cell(header_cal, 1, "Nama Pegawai")
+        nama_hari = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
+        for hari in range(1, jumlah_hari + 1):
+            dt = datetime(tahun, bulan, hari)
+            c = ws.cell(header_cal, hari + 1, f"{hari}\n{nama_hari[dt.weekday()]}")
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = PatternFill("solid", fgColor="17324D")
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.row_dimensions[header_cal].height = 30
+
+        jadwal = conn.execute(
+            """SELECT j.pegawai_id,j.hari,COALESCE(d.nama,'') FROM jadwal j
+               LEFT JOIN desa d ON d.id=j.desa_id
+               WHERE j.bagian_id=? AND j.periode_id=?""", (bagian_id, periode_id)
+        ).fetchall()
+        jmap = {(r[0], r[1]): r[2] for r in jadwal}
+
+        holiday_fill = PatternFill("solid", fgColor="ECECEC")
+        fill = PatternFill("solid", fgColor="B8D4EF")
+        thin = Side(style="thin", color="D9D9D9")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        for rr, p in enumerate(anggota, start=header_cal + 1):
+            ws.cell(rr, 1, p[1])
+            ws.cell(rr, 1).border = border
+            ws.cell(rr, 1).alignment = Alignment(vertical="center", wrap_text=True)
+            for hari in range(1, jumlah_hari + 1):
+                c = ws.cell(rr, hari + 1)
+                dt = datetime(tahun, bulan, hari)
+                desa = jmap.get((p[0], hari))
+                if dt.weekday() == 6 or hari in hari_libur:
+                    c.value = "LIBUR"
+                    c.fill = holiday_fill
+                elif desa is not None:
+                    c.value = f"{kode}\nDesa: {desa or 'Belum ditentukan'}"
+                    c.fill = fill
+                else:
+                    c.value = ""
+                c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                c.border = border
+
+        calendar_end = max(header_cal, header_cal + len(anggota))
+        self._add_excel_table(ws, f"A{header_cal}:{get_column_letter(jumlah_hari + 1)}{calendar_end}", f"tblKegiatan{bagian_id}Kal")
+        # Tidak memakai freeze panes di sheet gabungan: setiap tabel memiliki headernya sendiri
+        # dan pengguna dapat menggulir dari atas sampai bawah tanpa terkunci pada tabel pertama.
+        ws.column_dimensions["A"].width = 27
+        for col in range(2, jumlah_hari + 2):
+            ws.column_dimensions[get_column_letter(col)].width = 12
         ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
         ws.page_setup.fitToPage = True
         ws.page_setup.fitToWidth = 1
-        ws.print_title_rows = f"1:{header_row}"
+        ws.page_setup.fitToHeight = 0
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
 
+    
     def export_penugasan_excel(self):
-        """Export satu periode lengkap ke Excel: kalender, master pegawai, dan tiap kegiatan."""
+        """Export satu periode secara lengkap: kalender, pegawai, desa, dan setiap kegiatan."""
         if Workbook is None:
-            messagebox.showerror(
-                "Export Excel",
-                "Library openpyxl belum terpasang. Jalankan: pip install openpyxl",
-                parent=self
+            messagebox.showerror("Export Excel","Library openpyxl belum terpasang. Jalankan: pip install openpyxl",parent=self)
+            return
+        try:
+            bulan=NAMA_BULAN.index(self.bulan_var.get()); tahun=int(self.tahun_var.get())
+        except Exception:
+            messagebox.showerror("Export Excel","Bulan atau tahun tidak valid.",parent=self); return
+        periode_id=get_or_create_periode(bulan,tahun)
+        default_name=f"Penugasan_{NAMA_BULAN[bulan]}_{tahun}.xlsx"
+        path=filedialog.asksaveasfilename(parent=self,title="Simpan Export Penugasan",defaultextension=".xlsx",initialfile=default_name,filetypes=[("Excel Workbook","*.xlsx")])
+        if not path: return
+        try:
+            wb=Workbook(); conn=get_connection()
+            try:
+                self._export_calendar_sheet(wb,conn,bulan,tahun,periode_id)
+                self._export_data_pegawai_sheet(wb,conn)
+                self._export_data_desa_sheet(wb,conn,bulan,tahun,periode_id)
+                bagian_rows=conn.execute(
+                    """SELECT id,kode,COALESCE(nama_bagian,''),COALESCE(kegiatan,''),COALESCE(dana,0),penanggung_jawab_id
+                       FROM bagian WHERE periode_id=? ORDER BY id""",(periode_id,)
+                ).fetchall()
+                for bagian in bagian_rows:
+                    self._export_kegiatan_gabungan_sheet(wb, conn, bagian, bulan, tahun, periode_id)
+            finally:
+                conn.close()
+            wb.save(path); wb.close()
+            jumlah_sheet=3+len(bagian_rows)
+            messagebox.showinfo("Export Berhasil",f"File penugasan berhasil dibuat.\n\n{path}\n\nIsi: Kalender Keseluruhan + Data Pegawai + Data Desa + satu sheet per kegiatan dengan Data Kegiatan + Kalender Kegiatan ({jumlah_sheet} sheet).",parent=self)
+        except Exception as exc:
+            try: wb.close()
+            except Exception: pass
+            messagebox.showerror("Export Gagal","File Excel tidak dapat dibuat. Silakan coba lagi.",parent=self)
+
+    # =====================================================
+    # KELOLA / BERSIHKAN DATA PENUGASAN
+    # =====================================================
+
+    def buka_data_desa(self):
+        """Master Data Desa dengan fungsi yang setara dengan Data Pegawai."""
+        if getattr(self, "data_desa_window", None) is not None:
+            try:
+                if self.data_desa_window.winfo_exists():
+                    self.data_desa_window.lift()
+                    self.data_desa_window.focus_force()
+                    self.refresh_data_desa()
+                    return
+            except tk.TclError:
+                pass
+
+        win = tk.Toplevel(self)
+        self.data_desa_window = win
+        self.modernize_window(win, "Data Desa", (760, 500))
+        win.title("Data Desa")
+        # Toplevel ikut menyesuaikan ukuran monitor/DPI dan tetap bisa di-resize.
+        sw = max(900, int(win.winfo_screenwidth() * 0.78))
+        sh = max(560, int(win.winfo_screenheight() * 0.78))
+        win.geometry(f"{sw}x{sh}")
+        win.minsize(700, 450)
+        self.enable_native_window_controls(win)
+        win.protocol("WM_DELETE_WINDOW", lambda: self.tutup_data_desa(win))
+        self.center_window(win, self)
+
+        tk.Label(
+            win, text="DATA DESA", bg=UI_BG,
+            font=("Segoe UI", 17, "bold")
+        ).pack(anchor="w", padx=20, pady=(15, 5))
+
+        self.label_jumlah_desa = tk.Label(
+            win, text="", bg=UI_BG, fg=UI_MUTED,
+            font=("Segoe UI", 10)
+        )
+        self.label_jumlah_desa.pack(anchor="w", padx=20)
+
+        toolbar = tk.Frame(win, bg=UI_BG)
+        toolbar.pack(fill="x", padx=20, pady=(12, 5))
+        ttk.Button(toolbar, text="＋ Tambah Desa", command=self.tambah_desa).pack(side="left", padx=(0, 6))
+        ttk.Button(toolbar, text="✎ Edit", command=self.edit_desa_terpilih).pack(side="left", padx=6)
+        ttk.Button(toolbar, text="🗑 Nonaktifkan", command=self.nonaktifkan_desa_terpilih).pack(side="left", padx=6)
+        ttk.Button(toolbar, text="🗑 Hapus Permanen", command=self.hapus_desa_permanen_terpilih).pack(side="left", padx=6)
+        ttk.Button(toolbar, text="↥ Impor dari Excel", command=self.impor_desa_dari_excel).pack(side="left", padx=6)
+        ttk.Button(toolbar, text="✓ Aktifkan", command=self.aktifkan_desa_terpilih).pack(side="left", padx=6)
+        ttk.Button(toolbar, text="↻ Refresh", command=self.refresh_data_desa).pack(side="left", padx=6)
+
+        self.tampilkan_nonaktif_desa_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            toolbar, text="Tampilkan desa nonaktif",
+            variable=self.tampilkan_nonaktif_desa_var,
+            command=self.refresh_data_desa
+        ).pack(side="right", padx=(10, 0))
+
+        search = tk.Frame(win, bg=UI_BG)
+        search.pack(fill="x", padx=20, pady=(5, 5))
+        tk.Label(search, text="Cari Desa:", bg=UI_BG, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 8))
+        self.search_data_desa_var = tk.StringVar()
+        ent = ttk.Entry(search, textvariable=self.search_data_desa_var, width=45)
+        ent.pack(side="left")
+        ent.bind("<KeyRelease>", lambda event: self.refresh_data_desa())
+        ttk.Button(search, text="✕", width=3, command=lambda: (self.search_data_desa_var.set(""), self.refresh_data_desa())).pack(side="left", padx=5)
+
+        frame = tk.Frame(win, bg="white")
+        frame.pack(fill="both", expand=True, padx=20, pady=15)
+        columns = ("no", "nama", "status", "turun", "tanggal", "kegiatan")
+        self.table_desa = ttk.Treeview(frame, columns=columns, show="headings", selectmode="browse")
+        self.table_desa.heading("no", text="No.")
+        self.table_desa.heading("nama", text="Nama Desa")
+        self.table_desa.heading("status", text="Status")
+        self.table_desa.heading("turun", text="Dipakai Bulan Ini")
+        self.table_desa.heading("tanggal", text="Tanggal")
+        self.table_desa.heading("kegiatan", text="Kegiatan")
+        self.table_desa.column("no", width=58, anchor="center", stretch=False)
+        self.table_desa.column("nama", width=300, anchor="w")
+        self.table_desa.column("status", width=100, anchor="center")
+        self.table_desa.column("turun", width=140, anchor="center")
+        self.table_desa.column("tanggal", width=220, anchor="w")
+        self.table_desa.column("kegiatan", width=360, anchor="w")
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        self.table_desa.grid(row=0, column=0, sticky="nsew")
+        sc = tk.Scrollbar(
+            frame, orient="vertical", command=self.table_desa.yview,
+            width=18, bg="#94A3B8", troughcolor="#E2E8F0",
+            activebackground="#64748B", relief="flat", bd=0
+        )
+        sc.grid(row=0, column=1, sticky="ns")
+        scx = tk.Scrollbar(
+            frame, orient="horizontal", command=self.table_desa.xview,
+            width=18, bg="#94A3B8", troughcolor="#E2E8F0",
+            activebackground="#64748B", relief="flat", bd=0
+        )
+        scx.grid(row=1, column=0, sticky="ew")
+        self.table_desa.configure(yscrollcommand=sc.set, xscrollcommand=scx.set)
+        self.modernize_tree(self.table_desa)
+        self.table_desa.bind("<MouseWheel>", lambda e: self.table_desa.yview_scroll(int(-e.delta / 120), "units"), add="+")
+        self.table_desa.bind("<Shift-MouseWheel>", lambda e: self.table_desa.xview_scroll(int(-e.delta / 120), "units"), add="+")
+        self.table_desa.bind("<Double-1>", lambda event: self.edit_desa_terpilih())
+
+        self.refresh_data_desa()
+
+    def tutup_data_desa(self, win):
+        try:
+            if win.winfo_exists():
+                win.destroy()
+        finally:
+            self.data_desa_window = None
+            self.table_desa = None
+            self.search_data_desa_var = None
+            self.label_jumlah_desa = None
+
+    def refresh_setelah_perubahan_desa(self):
+        """Sinkronkan seluruh tampilan setelah master desa berubah."""
+        # Refresh tabel master desa yang sedang terbuka.
+        self.refresh_data_desa()
+
+        # Refresh semua tampilan yang bergantung pada data desa/jadwal.
+        # Ini juga memperbarui kalender kegiatan dan kalender keseluruhan.
+        try:
+            self.refresh_all()
+        except Exception:
+            # refresh_all menampilkan error sendiri; kalender aktif tetap
+            # dicoba dimuat ulang agar perubahan desa langsung terlihat.
+            try:
+                self.load_kalender()
+            except Exception:
+                pass
+            try:
+                self.load_kalender_keseluruhan()
+            except Exception:
+                pass
+
+    def refresh_data_desa(self):
+        if not hasattr(self, "table_desa") or self.table_desa is None:
+            return
+        try:
+            if not self.table_desa.winfo_exists():
+                self.table_desa = None
+                return
+        except tk.TclError:
+            self.table_desa = None
+            return
+
+        for item in self.table_desa.get_children():
+            self.table_desa.delete(item)
+
+        keyword = ""
+        if getattr(self, "search_data_desa_var", None) is not None:
+            keyword = self.search_data_desa_var.get().strip()
+        tampil_nonaktif = bool(getattr(self, "tampilkan_nonaktif_desa_var", tk.BooleanVar(value=False)).get())
+
+        conn = get_connection()
+        try:
+            sql = """
+                SELECT d.id, d.nama, d.aktif,
+                       COUNT(DISTINCT j.hari) AS jumlah_dipakai,
+                       GROUP_CONCAT(DISTINCT j.hari) AS tanggal,
+                       GROUP_CONCAT(DISTINCT
+                           CASE
+                               WHEN COALESCE(b.nama_bagian,'') <> '' THEN
+                                   b.kode || ' - ' || b.nama_bagian
+                               ELSE
+                                   'Kegiatan ' || b.kode
+                           END
+                       ) AS kegiatan
+                FROM desa d
+                LEFT JOIN jadwal j
+                    ON j.desa_id=d.id AND j.periode_id=?
+                LEFT JOIN bagian b
+                    ON b.id=j.bagian_id
+                WHERE 1=1
+            """
+            # Jangan menghapus parameter periode_id. Bug sebelumnya membuat
+            # query menerima jumlah parameter yang tidak sesuai sehingga rekap
+            # desa kosong.
+            params = [self.periode_id]
+            if not tampil_nonaktif:
+                sql += " AND d.aktif = 1"
+            if keyword:
+                sql += " AND d.nama LIKE ?"
+                params.append(f"%{keyword}%")
+            sql += " GROUP BY d.id, d.nama, d.aktif ORDER BY d.nama COLLATE NOCASE"
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+
+        aktif = 0
+        for nomor_desa, (did, nama, status, jumlah_dipakai, tanggal, kegiatan) in enumerate(rows, start=1):
+            if status:
+                aktif += 1
+            try:
+                tanggal_list = sorted({int(x) for x in (tanggal or "").split(",") if str(x).strip()})
+                tanggal_text = ", ".join(str(x) for x in tanggal_list) if tanggal_list else "-"
+            except Exception:
+                tanggal_text = tanggal or "-"
+            self.table_desa.insert(
+                "", "end", iid=str(did),
+                values=(
+                    nomor_desa,
+                    nama,
+                    "Aktif" if status else "Nonaktif",
+                    f"{jumlah_dipakai} kali",
+                    tanggal_text,
+                    kegiatan or "-"
+                )
+            )
+
+        total = len(rows)
+        if getattr(self, "label_jumlah_desa", None) is not None:
+            self.label_jumlah_desa.config(text=f"{total} desa ditampilkan  •  {aktif} aktif")
+
+    def _desa_terpilih(self):
+        if not hasattr(self, "table_desa") or self.table_desa is None:
+            return None
+        sel = self.table_desa.selection()
+        return int(sel[0]) if sel else None
+
+    def tambah_desa(self):
+        parent = getattr(self, "data_desa_window", self)
+        nama = simpledialog.askstring("Tambah Desa", "Nama desa:", parent=parent)
+        if not nama or not nama.strip():
+            return
+        nama = nama.strip()
+        conn = get_connection()
+        try:
+            conn.execute("INSERT INTO desa(nama, aktif) VALUES(?, 1)", (nama,))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            messagebox.showwarning("Data Desa", "Nama desa sudah ada.", parent=parent)
+            return
+        finally:
+            conn.close()
+        self.refresh_setelah_perubahan_desa()
+
+    def edit_desa_terpilih(self):
+        parent = getattr(self, "data_desa_window", self)
+        desa_id = self._desa_terpilih()
+        if not desa_id:
+            messagebox.showwarning("Data Desa", "Pilih desa terlebih dahulu.", parent=parent)
+            return
+        conn = get_connection()
+        row = conn.execute("SELECT nama FROM desa WHERE id=?", (desa_id,)).fetchone()
+        conn.close()
+        if not row:
+            return
+        nama_lama = row[0]
+        nama = simpledialog.askstring("Edit Desa", "Nama desa:", initialvalue=nama_lama, parent=parent)
+        if nama is None or not nama.strip():
+            return
+        conn = get_connection()
+        try:
+            conn.execute("UPDATE desa SET nama=? WHERE id=?", (nama.strip(), desa_id))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            messagebox.showwarning("Data Desa", "Nama desa sudah digunakan oleh desa lain.", parent=parent)
+            return
+        finally:
+            conn.close()
+        self.refresh_setelah_perubahan_desa()
+
+    def nonaktifkan_desa_terpilih(self):
+        parent = getattr(self, "data_desa_window", self)
+        desa_id = self._desa_terpilih()
+        if not desa_id:
+            messagebox.showwarning("Data Desa", "Pilih desa terlebih dahulu.", parent=parent)
+            return
+        if not messagebox.askyesno("Nonaktifkan Desa", "Nonaktifkan desa terpilih? Desa tidak akan muncul sebagai pilihan baru pada kalender.", parent=parent):
+            return
+        conn = get_connection()
+        conn.execute("UPDATE desa SET aktif=0 WHERE id=?", (desa_id,))
+        conn.commit(); conn.close()
+        self.refresh_setelah_perubahan_desa()
+
+    def aktifkan_desa_terpilih(self):
+        parent = getattr(self, "data_desa_window", self)
+        desa_id = self._desa_terpilih()
+        if not desa_id:
+            messagebox.showwarning("Data Desa", "Pilih desa terlebih dahulu.", parent=parent)
+            return
+        conn = get_connection()
+        conn.execute("UPDATE desa SET aktif=1 WHERE id=?", (desa_id,))
+        conn.commit(); conn.close()
+        self.refresh_setelah_perubahan_desa()
+
+    def hapus_desa_permanen_terpilih(self):
+        parent = getattr(self, "data_desa_window", self)
+        desa_id = self._desa_terpilih()
+        if not desa_id:
+            messagebox.showwarning("Data Desa", "Pilih desa terlebih dahulu.", parent=parent)
+            return
+        conn = get_connection()
+        row = conn.execute("SELECT nama FROM desa WHERE id=?", (desa_id,)).fetchone()
+        dipakai = conn.execute("SELECT COUNT(*) FROM jadwal WHERE desa_id=?", (desa_id,)).fetchone()[0]
+        conn.close()
+        if not row:
+            return
+        nama = row[0]
+        if dipakai:
+            messagebox.showwarning(
+                "Tidak Dapat Dihapus",
+                f"Desa '{nama}' sudah digunakan oleh {dipakai} data penugasan.\n\nNonaktifkan saja agar desa tidak muncul pada pilihan penugasan baru.",
+                parent=parent
             )
             return
-
+        if not messagebox.askyesno(
+            "Hapus Permanen Desa",
+            f"Hapus permanen desa '{nama}'?\n\nData yang sudah dihapus tidak dapat dipulihkan dari aplikasi.",
+            parent=parent
+        ):
+            return
+        konfirmasi = simpledialog.askstring(
+            "Konfirmasi Hapus Permanen",
+            "Ketik HAPUS PERMANEN untuk melanjutkan:",
+            parent=parent
+        )
+        if konfirmasi != "HAPUS PERMANEN":
+            return
+        conn = get_connection()
         try:
-            # NAMA_BULAN memakai indeks kalender asli (1=Januari, ..., 12=Desember)
-            # sehingga tidak boleh ditambah 1 lagi.
-            bulan = NAMA_BULAN.index(self.bulan_var.get())
-            tahun = int(self.tahun_var.get())
-        except Exception:
-            messagebox.showerror("Export Excel", "Bulan atau tahun tidak valid.", parent=self)
+            conn.execute("DELETE FROM desa WHERE id=?", (desa_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        self.refresh_setelah_perubahan_desa()
+
+    def impor_desa_dari_excel(self):
+        """Import master desa dari sheet Nama Desa/NamaDesa dengan data mulai A1."""
+        parent = getattr(self, "data_desa_window", self)
+        if load_workbook is None:
+            messagebox.showerror("Import Excel", "Library openpyxl belum terpasang.", parent=parent)
             return
 
-        periode_id = get_or_create_periode(bulan, tahun)
-        default_name = f"Penugasan_{NAMA_BULAN[bulan]}_{tahun}.xlsx"
-        path = filedialog.asksaveasfilename(
-            parent=self,
-            title="Simpan Export Penugasan",
-            defaultextension=".xlsx",
-            initialfile=default_name,
-            filetypes=[("Excel Workbook", "*.xlsx")]
+        path = filedialog.askopenfilename(
+            parent=parent,
+            title="Pilih File Excel Nama Desa",
+            filetypes=[
+                ("Excel Macro-Enabled (*.xlsm)", "*.xlsm"),
+                ("Excel Workbook (*.xlsx)", "*.xlsx"),
+                ("Semua File Excel", "*.xlsm *.xlsx"),
+            ]
         )
         if not path:
             return
 
         try:
-            wb = Workbook()
-            conn = get_connection()
-            try:
-                self._export_calendar_sheet(wb, conn, bulan, tahun, periode_id)
-                self._export_data_pegawai_sheet(wb, conn)
-                bagian_rows = conn.execute(
-                    """
-                    SELECT id, kode, COALESCE(nama_bagian, ''), COALESCE(kegiatan, ''),
-                           COALESCE(lokasi, ''), COALESCE(dana, 0), penanggung_jawab_id
-                    FROM bagian
-                    WHERE periode_id = ?
-                    ORDER BY id
-                    """,
-                    (periode_id,)
-                ).fetchall()
-                for bagian in bagian_rows:
-                    self._export_kegiatan_sheet(wb, conn, bagian, bulan, tahun)
-            finally:
-                conn.close()
-
-            wb.save(path)
-            wb.close()
-            messagebox.showinfo(
-                "Export Berhasil",
-                f"File penugasan berhasil dibuat.\n\n{path}\n\n"
-                f"Isi: Kalender Keseluruhan + Data Pegawai + {len(bagian_rows)} sheet kegiatan.",
-                parent=self
+            wb = load_workbook(
+                filename=path, read_only=True, data_only=True,
+                keep_vba=path.lower().endswith(".xlsm")
             )
         except Exception as exc:
-            messagebox.showerror(
-                "Export Gagal",
-                f"Gagal membuat file Excel.\n\n{exc}",
-                parent=self
-            )
+            messagebox.showerror("Import Excel", "File Excel tidak dapat dibaca. Pastikan file valid lalu coba lagi.", parent=parent)
+            return
 
-    # =====================================================
-    # KELOLA / BERSIHKAN DATA PENUGASAN
-    # =====================================================
+        def norm_sheet(value):
+            return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+        target_sheet = next((x for x in wb.sheetnames if norm_sheet(x) in {"namadesa", "nama_desa"}), None)
+        if target_sheet is None:
+            tersedia = "\n".join(f"• {x}" for x in wb.sheetnames[:30])
+            wb.close()
+            messagebox.showerror(
+                "Import Excel",
+                "Sheet nama desa tidak ditemukan.\n\n"
+                "Workbook wajib memiliki sheet bernama 'Nama Desa' atau 'NamaDesa'.\n"
+                "Berbeda dengan sheet DaftarPegawai, sheet ini TIDAK memakai header: "
+                "sel A1 sudah merupakan nama desa pertama, A2 desa kedua, dan seterusnya.\n\n"
+                f"Sheet yang ditemukan:\n{tersedia}",
+                parent=parent
+            )
+            return
+
+        ws = wb[target_sheet]
+        nama_desa = []
+        seen = set()
+        for r in range(1, (ws.max_row or 0) + 1):
+            value = ws.cell(r, 1).value
+            nama = str(value).strip() if value is not None else ""
+            if not nama:
+                continue
+            key = re.sub(r"\s+", " ", nama).strip().casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            nama_desa.append(nama)
+        wb.close()
+
+        if not nama_desa:
+            messagebox.showwarning("Import Excel", f"Sheet '{target_sheet}' ditemukan, tetapi kolom A tidak berisi nama desa.", parent=parent)
+            return
+
+        jawab = messagebox.askyesno(
+            "Ganti Seluruh Data Desa",
+            f"File: {path}\nSheet: {target_sheet}\nNama desa terbaca: {len(nama_desa)}\n\n"
+            "IMPORT INI AKAN MENGGANTIKAN SELURUH DATA DESA MASTER LAMA.\n"
+            "Desa yang sedang dipakai pada data penugasan tidak boleh dihapus.\n"
+            "Pastikan data sudah di-backup/export sebelum melanjutkan.\n\nLanjutkan?",
+            parent=parent
+        )
+        if not jawab:
+            return
+        konfirmasi = simpledialog.askstring(
+            "Konfirmasi Penggantian Data Desa",
+            "Ketik GANTI untuk mengganti master desa:",
+            parent=parent
+        )
+        if konfirmasi != "GANTI":
+            return
+
+        conn = get_connection()
+        try:
+            dipakai = conn.execute("SELECT COUNT(*) FROM jadwal WHERE desa_id IS NOT NULL").fetchone()[0]
+            if dipakai:
+                messagebox.showwarning(
+                    "Import Dibatalkan",
+                    f"Masih ada {dipakai} jadwal yang menggunakan desa.\n\n"
+                    "Bersihkan/export data penugasan lama terlebih dahulu sebelum mengganti master desa.",
+                    parent=parent
+                )
+                return
+            conn.execute("DELETE FROM desa")
+            for nama in nama_desa:
+                conn.execute("INSERT INTO desa(nama, aktif) VALUES(?,1)", (nama,))
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            messagebox.showerror("Import Desa Gagal", "Ada nama desa yang tidak valid atau duplikat. Periksa file lalu coba lagi.", parent=parent)
+            return
+        except Exception as exc:
+            conn.rollback()
+            messagebox.showerror("Import Desa Gagal", "Import gagal dan perubahan dibatalkan. Silakan periksa file lalu coba lagi.", parent=parent)
+            return
+        finally:
+            conn.close()
+
+        self.refresh_setelah_perubahan_desa()
+        messagebox.showinfo(
+            "Import Berhasil",
+            f"Berhasil mengimpor {len(nama_desa)} nama desa dari sheet '{target_sheet}'.\n\n"
+            "Data diambil langsung dari kolom A mulai A1 (A1, A2, A3, dst.).",
+            parent=parent
+        )
 
     def buka_kelola_data(self):
         """Jendela untuk menghapus histori penugasan per bulan tanpa menghapus master pegawai."""
@@ -5293,15 +7587,19 @@ class App(tk.Tk):
 
         win = tk.Toplevel(self)
         self.kelola_data_window = win
+        self.modernize_window(win, "Kelola / Bersihkan Data", (760, 500))
         win.title("Kelola / Bersihkan Data Penugasan")
         win.geometry("980x650")
         win.minsize(850, 560)
+        self.enable_native_window_controls(win)
         win.transient(self)
+        self.enable_native_window_controls(win)
         win.protocol("WM_DELETE_WINDOW", lambda: self.tutup_kelola_data(win))
+        self.center_window(win, self)
 
-        outer = tk.Frame(win, bg="#F4F6F8")
+        outer = tk.Frame(win, bg=UI_BG)
         outer.pack(fill="both", expand=True)
-        tk.Label(outer, text="KELOLA / BERSIHKAN DATA PENUGASAN", bg="#F4F6F8", font=("Segoe UI", 18, "bold")).pack(anchor="w", padx=25, pady=(20, 5))
+        tk.Label(outer, text="KELOLA / BERSIHKAN DATA PENUGASAN", bg=UI_BG, font=("Segoe UI", 17, "bold")).pack(anchor="w", padx=25, pady=(20, 5))
         tk.Label(
             outer,
             text=(
@@ -5309,28 +7607,30 @@ class App(tk.Tk):
                 "untuk menghapus seluruh kegiatan, keanggotaan, jadwal, dan hari liburnya.\n"
                 "Master Data Pegawai TIDAK ikut dihapus. Data yang sudah dihapus tidak dapat dipulihkan dari aplikasi."
             ),
-            bg="#F4F6F8", fg="#555555", justify="left", font=("Segoe UI", 10)
+            bg=UI_BG, fg=UI_MUTED, justify="left", font=("Segoe UI", 10)
         ).pack(anchor="w", padx=25, pady=(0, 15))
 
         table_frame = tk.Frame(outer, bg="white")
         table_frame.pack(fill="both", expand=True, padx=25, pady=5)
         self.kelola_data_tree = ttk.Treeview(
-            table_frame, columns=("periode_id", "periode", "kegiatan", "anggota", "jadwal"),
+            table_frame, columns=("no", "periode_id", "periode", "kegiatan", "anggota", "jadwal"),
             show="headings", selectmode="browse"
         )
-        heads = {"periode_id":"ID", "periode":"Periode", "kegiatan":"Kegiatan", "anggota":"Keanggotaan", "jadwal":"Turun"}
-        widths = {"periode_id":60, "periode":180, "kegiatan":130, "anggota":150, "jadwal":120}
+        heads = {"no":"No.", "periode_id":"ID", "periode":"Periode", "kegiatan":"Kegiatan", "anggota":"Keanggotaan", "jadwal":"Turun"}
+        widths = {"no":58, "periode_id":70, "periode":180, "kegiatan":130, "anggota":150, "jadwal":120}
         for c in heads:
             self.kelola_data_tree.heading(c, text=heads[c])
             self.kelola_data_tree.column(c, width=widths[c], anchor="center")
-        self.kelola_data_tree.column("periode_id", width=60, stretch=False)
+        self.kelola_data_tree.column("no", width=58, stretch=False)
+        self.kelola_data_tree.column("periode_id", width=70, stretch=False)
         self.kelola_data_tree.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(table_frame, orient="vertical", command=self.kelola_data_tree.yview)
         sb.pack(side="right", fill="y")
         self.kelola_data_tree.configure(yscrollcommand=sb.set)
+        self.modernize_tree(self.kelola_data_tree)
         self.kelola_data_tree.bind("<Delete>", lambda event: self.bersihkan_periode_terpilih())
 
-        btn_frame = tk.Frame(outer, bg="#F4F6F8")
+        btn_frame = tk.Frame(outer, bg=UI_BG)
         btn_frame.pack(fill="x", padx=25, pady=(12, 20))
         ttk.Button(btn_frame, text="↻ Refresh", command=self.refresh_kelola_data).pack(side="left")
         ttk.Button(btn_frame, text="🗑 Bersihkan Bulan Terpilih", command=self.bersihkan_periode_terpilih).pack(side="left", padx=8)
@@ -5359,11 +7659,11 @@ class App(tk.Tk):
         conn = get_connection()
         try:
             rows = conn.execute("SELECT id, bulan, tahun FROM periode ORDER BY tahun DESC, bulan DESC").fetchall()
-            for periode_id, bulan, tahun in rows:
+            for nomor, (periode_id, bulan, tahun) in enumerate(rows, start=1):
                 ringkas = get_ringkasan_periode(periode_id)
                 tree.insert(
                     "", "end", iid=str(periode_id),
-                    values=(periode_id, f"{NAMA_BULAN[int(bulan)]} {int(tahun)}", ringkas["kegiatan"], ringkas["anggota"], ringkas["jadwal"])
+                    values=(nomor, periode_id, f"{NAMA_BULAN[int(bulan)]} {int(tahun)}", ringkas["kegiatan"], ringkas["anggota"], ringkas["jadwal"])
                 )
         finally:
             conn.close()
@@ -5395,7 +7695,7 @@ class App(tk.Tk):
         try:
             hapus_data_penugasan_periode(periode_id)
         except Exception as exc:
-            messagebox.showerror("Gagal Membersihkan", f"Data gagal dibersihkan.\n\n{exc}", parent=self.kelola_data_window)
+            messagebox.showerror("Gagal Membersihkan", "Data penugasan tidak dapat dibersihkan. Silakan coba lagi.", parent=self.kelola_data_window)
             return
 
         if periode_id == self.periode_id:
@@ -5436,7 +7736,7 @@ class App(tk.Tk):
         try:
             hapus_semua_data_penugasan()
         except Exception as exc:
-            messagebox.showerror("Gagal Membersihkan", f"Data gagal dibersihkan.\n\n{exc}", parent=self.kelola_data_window)
+            messagebox.showerror("Gagal Membersihkan", "Data penugasan tidak dapat dibersihkan. Silakan coba lagi.", parent=self.kelola_data_window)
             return
         self.periode_id = get_or_create_periode(self.bulan, self.tahun)
         self.bagian_aktif = load_bagian_codes(self.periode_id)[0]
@@ -5540,6 +7840,29 @@ class App(tk.Tk):
         ) = data
 
         self.bagian_id = bagian_id
+        conn = get_connection()
+        komposisi_row = conn.execute("SELECT COALESCE(komposisi_target, '') FROM bagian WHERE id = ?", (bagian_id,)).fetchone()
+        try:
+            stored = json.loads(komposisi_row[0]) if komposisi_row and komposisi_row[0] else {}
+            if isinstance(stored, dict) and "target" in stored:
+                self.komposisi_target = {
+                    str(k): int(v) for k, v in (stored.get("target") or {}).items()
+                }
+                self.komposisi_target_tarif = {
+                    str(k): int(v) for k, v in (stored.get("tarif") or {}).items()
+                }
+            elif isinstance(stored, dict):
+                # Kompatibel dengan data lama yang hanya menyimpan angka target.
+                self.komposisi_target = {str(k): int(v) for k, v in stored.items()}
+                self.komposisi_target_tarif = {}
+            else:
+                self.komposisi_target = {}
+                self.komposisi_target_tarif = {}
+        except Exception:
+            self.komposisi_target = {}
+            self.komposisi_target_tarif = {}
+
+        conn.close()
 
         conn = get_connection()
         nama_row = conn.execute(
@@ -5557,10 +7880,6 @@ class App(tk.Tk):
         # Sinkronkan state StringVar dan widget Text.
         self.kegiatan_var.set(deskripsi)
         self.set_deskripsi(deskripsi)
-
-        self.lokasi_var.set(
-            lokasi or ""
-        )
 
         self.dana_var.set(
             str(dana or "")
@@ -5629,6 +7948,7 @@ class App(tk.Tk):
 
 if __name__ == "__main__":
 
+    configure_windows_dpi()
     app = App()
 
     app.mainloop()
