@@ -2523,24 +2523,21 @@ class App(tk.Tk):
         self.table_pilih.column("nama", anchor="w")
         self.table_pilih.column("jabatan", anchor="w")
 
-        self.table_pilih.pack(
-            side="top",
-            fill="both",
-            expand=True
-        )
+        # Treeview dan scrollbar memakai grid agar keduanya selalu mendapat
+        # ruang sendiri. Jika memakai pack berurutan, scrollbar dapat terdesak
+        # oleh Treeview yang fill/expand.
+        table_frame.grid_rowconfigure(0, weight=1)
+        table_frame.grid_columnconfigure(0, weight=1)
+        self.table_pilih.grid(row=0, column=0, sticky="nsew")
 
-        scroll_table = tk.Scrollbar(
-            table_frame, orient="vertical", command=self.table_pilih.yview,
-            width=14, bg="#CBD5E1", troughcolor="#F1F5F9",
-            activebackground="#94A3B8", relief="flat", bd=0
+        scroll_table = ttk.Scrollbar(
+            table_frame, orient="vertical", command=self.table_pilih.yview
         )
-        scroll_table.pack(side="right", fill="y")
-        scroll_table_x = tk.Scrollbar(
-            table_frame, orient="horizontal", command=self.table_pilih.xview,
-            width=14, bg="#CBD5E1", troughcolor="#F1F5F9",
-            activebackground="#94A3B8", relief="flat", bd=0
+        scroll_table.grid(row=0, column=1, sticky="ns")
+        scroll_table_x = ttk.Scrollbar(
+            table_frame, orient="horizontal", command=self.table_pilih.xview
         )
-        scroll_table_x.pack(side="bottom", fill="x")
+        scroll_table_x.grid(row=1, column=0, sticky="ew")
 
         self.table_pilih.configure(
             yscrollcommand=scroll_table.set,
@@ -3585,86 +3582,126 @@ class App(tk.Tk):
         return " • ".join(messages)
 
     def load_kalender(self):
-        """Kalender kegiatan dengan target komposisi, desa per tanggal, dan total biaya."""
-        for widget in self.calendar_frame.winfo_children():
-            widget.destroy()
+        """Kalender kegiatan dengan header tanggal tetap saat scroll vertikal.
+
+        Nama/no pegawai tetap di kiri; panel nama dan jadwal bergerak vertikal
+        bersama. Header tanggal terpisah dari badan tabel, tetapi horizontalnya
+        tersinkron agar tanggal tetap tepat di atas kolom yang sesuai.
+        """
+        for target in (
+            self.calendar_frame, self.calendar_names_frame,
+            self.calendar_header_frame, self.calendar_names_header_frame
+        ):
+            for widget in target.winfo_children():
+                widget.destroy()
+
         bulan = NAMA_BULAN.index(self.bulan_var.get())
         tahun = int(self.tahun_var.get())
         jumlah_hari = calendar.monthrange(tahun, bulan)[1]
         hari_libur = load_hari_libur(self.periode_id)
 
         conn = get_connection()
-        kegiatan_rows = conn.execute("SELECT kode, COALESCE(nama_bagian,''), COALESCE(kegiatan,'') FROM bagian WHERE periode_id=? ORDER BY id", (self.periode_id,)).fetchall()
+        kegiatan_rows = conn.execute(
+            "SELECT kode, COALESCE(nama_bagian,''), COALESCE(kegiatan,'') FROM bagian WHERE periode_id=? ORDER BY id",
+            (self.periode_id,)
+        ).fetchall()
         jadwal_rows = conn.execute("""
             SELECT j.pegawai_id,j.hari,b.kode,COALESCE(b.nama_bagian,''),COALESCE(b.kegiatan,''),j.desa_id,COALESCE(d.nama,'')
             FROM jadwal j JOIN bagian b ON b.id=j.bagian_id LEFT JOIN desa d ON d.id=j.desa_id
             WHERE j.periode_id=?
         """, (self.periode_id,)).fetchall()
+        anggota_rows = conn.execute(
+            "SELECT pegawai_id FROM anggota_bagian WHERE bagian_id=?", (self.bagian_id,)
+        ).fetchall() if self.bagian_id else []
         conn.close()
-        palette=["#B8D4EF","#C7E6C5","#F3D6A5","#D9C2E9","#F4B8B8","#BFE3E3","#E7D6A8","#C9D7B8"]
-        self.calendar_colors={r[0]:palette[i%len(palette)] for i,r in enumerate(kegiatan_rows)}
-        jadwal_map={(r[0],r[1]):{"kode":r[2],"nama":(r[3] or '').strip() or f"Kegiatan {r[2]}","desa_id":r[5],"desa":r[6]} for r in jadwal_rows}
+
+        palette = ["#B8D4EF", "#C7E6C5", "#F3D6A5", "#D9C2E9", "#F4B8B8", "#BFE3E3", "#E7D6A8", "#C9D7B8"]
+        self.calendar_colors = {r[0]: palette[i % len(palette)] for i, r in enumerate(kegiatan_rows)}
+        jadwal_map = {
+            (r[0], r[1]): {"kode": r[2], "nama": (r[3] or "").strip() or f"Kegiatan {r[2]}", "desa_id": r[5], "desa": r[6]}
+            for r in jadwal_rows
+        }
 
         self.info_kalender.config(text=f"Pegawai kegiatan {self.bagian_aktif} • {NAMA_BULAN[bulan]} {tahun}")
-        self.info_libur.config(text=f"Libur manual: {', '.join(map(str,sorted(hari_libur))) if hari_libur else 'tidak ada'} • Minggu selalu libur")
-        for w in self.legend_kegiatan.winfo_children(): w.destroy()
-        tk.Label(self.legend_kegiatan,text="Keterangan kegiatan:",bg=UI_BG,font=("Segoe UI",9,"bold")).pack(side="left",padx=(0,8))
-        for kode,nama,_ in kegiatan_rows:
-            tk.Label(self.legend_kegiatan,text=f"{kode} = {(nama or '').strip() or f'Kegiatan {kode}'}",bg=self.calendar_colors[kode],relief="solid",bd=1,padx=8,pady=3,font=("Segoe UI",9,"bold")).pack(side="left",padx=3)
+        self.info_libur.config(text=f"Libur manual: {', '.join(map(str, sorted(hari_libur))) if hari_libur else 'tidak ada'} • Minggu selalu libur")
+        for w in self.legend_kegiatan.winfo_children():
+            w.destroy()
+        tk.Label(self.legend_kegiatan, text="Keterangan kegiatan:", bg=UI_BG, font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 8))
+        for kode, nama, _ in kegiatan_rows:
+            tk.Label(
+                self.legend_kegiatan,
+                text=f"{kode} = {(nama or '').strip() or f'Kegiatan {kode}'}",
+                bg=self.calendar_colors[kode], relief="solid", bd=1,
+                padx=8, pady=3, font=("Segoe UI", 9, "bold")
+            ).pack(side="left", padx=3)
 
-        ttk.Label(self.calendar_frame,text="No.",font=("Segoe UI",9,"bold"),anchor="center").grid(row=0,column=0,rowspan=2,sticky="nsew",padx=1,pady=1)
-        ttk.Label(self.calendar_frame,text="Nama Pegawai",font=("Segoe UI",9,"bold"),anchor="center").grid(row=0,column=1,rowspan=2,sticky="nsew",padx=1,pady=1)
-        nama_hari=["Sen","Sel","Rab","Kam","Jum","Sab","Min"]
-        for hari in range(1,jumlah_hari+1):
-            tanggal=datetime(tahun,bulan,hari); nonkerja=tanggal.weekday()==6 or hari in hari_libur
-            ttk.Label(self.calendar_frame,text=str(hari),font=("Segoe UI",9,"bold"),anchor="center",style="Holiday.TLabel" if nonkerja else "TLabel").grid(row=0,column=hari+1,sticky="nsew",padx=1,pady=(1,0))
-            ttk.Label(self.calendar_frame,text="LIBUR" if nonkerja else nama_hari[tanggal.weekday()],font=("Segoe UI",7 if nonkerja else 8,"bold" if nonkerja else "normal"),anchor="center",style="Holiday.TLabel" if nonkerja else "TLabel").grid(row=1,column=hari+1,sticky="nsew",padx=1,pady=(0,1))
+        # Header kiri tetap di tempat; header tanggal terpisah dari area scroll vertikal.
+        ttk.Label(self.calendar_names_header_frame, text="No.", font=("Segoe UI", 9, "bold"), anchor="center").grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
+        ttk.Label(self.calendar_names_header_frame, text="Nama Pegawai", font=("Segoe UI", 9, "bold"), anchor="center").grid(row=0, column=1, sticky="nsew", padx=1, pady=1)
+        self.calendar_names_header_frame.grid_columnconfigure(0, minsize=42, weight=0)
+        self.calendar_names_header_frame.grid_columnconfigure(1, minsize=245, weight=1)
 
-        conn=get_connection(); anggota_rows=conn.execute("SELECT pegawai_id FROM anggota_bagian WHERE bagian_id=?",(self.bagian_id,)).fetchall() if self.bagian_id else []; conn.close()
-        anggota_ids={r[0] for r in anggota_rows}
-        semua_pegawai=sorted([p for p in self.pegawai if p[0] in anggota_ids],key=lambda p:str(p[1] or '').lower())
+        nama_hari = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
+        for hari in range(1, jumlah_hari + 1):
+            tanggal = datetime(tahun, bulan, hari)
+            nonkerja = tanggal.weekday() == 6 or hari in hari_libur
+            ttk.Label(self.calendar_header_frame, text=str(hari), font=("Segoe UI", 9, "bold"), anchor="center", style="Holiday.TLabel" if nonkerja else "TLabel").grid(row=0, column=hari-1, sticky="nsew", padx=1, pady=(1, 0))
+            ttk.Label(self.calendar_header_frame, text="LIBUR" if nonkerja else nama_hari[tanggal.weekday()], font=("Segoe UI", 7 if nonkerja else 8, "bold" if nonkerja else "normal"), anchor="center", style="Holiday.TLabel" if nonkerja else "TLabel").grid(row=1, column=hari-1, sticky="nsew", padx=1, pady=(0, 1))
+            self.calendar_header_frame.grid_columnconfigure(hari-1, minsize=78, weight=0)
+            self.calendar_frame.grid_columnconfigure(hari-1, minsize=78, weight=0)
+
+        anggota_ids = {r[0] for r in anggota_rows}
+        semua_pegawai = sorted([p for p in self.pegawai if p[0] in anggota_ids], key=lambda p: str(p[1] or "").lower())
         if not semua_pegawai:
-            ttk.Label(self.calendar_frame,text="Belum ada pegawai yang dipilih untuk kegiatan ini.",font=("Segoe UI",10)).grid(row=2,column=0,columnspan=jumlah_hari+2,pady=20)
+            ttk.Label(self.calendar_names_frame, text="—", anchor="center").grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
+            ttk.Label(self.calendar_names_frame, text="Belum ada pegawai yang dipilih untuk kegiatan ini.", anchor="w").grid(row=0, column=1, sticky="nsew", padx=1, pady=1)
+            ttk.Label(self.calendar_frame, text="Belum ada pegawai yang dipilih untuk kegiatan ini.", anchor="w").grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
+            self.calendar_names_frame.grid_rowconfigure(0, minsize=47)
+            self.calendar_frame.grid_rowconfigure(0, minsize=47)
         else:
-            for nomor,rowdata in enumerate(semua_pegawai,start=1):
-                row = nomor + 1
-                p = rowdata
-                pid=p[0]; nama=p[1] or "Tanpa Nama"
-                ttk.Label(self.calendar_frame,text=str(nomor),anchor="center",padding=(2,0)).grid(row=row,column=0,sticky="nsew",padx=1,pady=1)
-                ttk.Label(self.calendar_frame,text=nama,anchor="w",padding=(5,0)).grid(row=row,column=1,sticky="nsew",padx=1,pady=1)
-                for hari in range(1,jumlah_hari+1):
-                    tanggal=datetime(tahun,bulan,hari); nonkerja=tanggal.weekday()==6 or hari in hari_libur; detail=jadwal_map.get((pid,hari))
+            for nomor, p in enumerate(semua_pegawai, start=1):
+                row = nomor - 1
+                pid, nama = p[0], p[1] or "Tanpa Nama"
+                ttk.Label(self.calendar_names_frame, text=str(nomor), anchor="center", padding=(2, 0)).grid(row=row, column=0, sticky="nsew", padx=1, pady=1)
+                ttk.Label(self.calendar_names_frame, text=nama, anchor="w", padding=(5, 0)).grid(row=row, column=1, sticky="nsew", padx=1, pady=1)
+                for hari in range(1, jumlah_hari + 1):
+                    tanggal = datetime(tahun, bulan, hari)
+                    nonkerja = tanggal.weekday() == 6 or hari in hari_libur
+                    detail = jadwal_map.get((pid, hari))
                     if nonkerja:
-                        cell=tk.Button(self.calendar_frame,text="LIBUR",width=8,state="disabled",disabledforeground="#888888",bg="#F1F3F5",relief="solid",bd=1)
+                        cell = tk.Button(self.calendar_frame, text="LIBUR", width=8, state="disabled", disabledforeground="#888888", bg="#F1F3F5", relief="solid", bd=1)
                     else:
-                        kode=detail["kode"] if detail else ""; desa=detail["desa"] if detail else ""; text=kode + (f"\n{desa}" if desa else "")
-                        cell=tk.Button(self.calendar_frame,text=text,width=10,height=2,bg=self.calendar_colors.get(kode,"#FFFFFF") if detail else "#FFFFFF",relief="solid",bd=1,font=("Segoe UI",8,"bold") if kode else ("Segoe UI",8),command=lambda pid=pid,h=hari:self.toggle_jadwal(pid,h))
+                        kode = detail["kode"] if detail else ""
+                        desa = detail["desa"] if detail else ""
+                        text = kode + (f"\n{desa}" if desa else "")
+                        cell = tk.Button(self.calendar_frame, text=text, width=10, height=2, bg=self.calendar_colors.get(kode, "#FFFFFF") if detail else "#FFFFFF", relief="solid", bd=1, font=("Segoe UI", 8, "bold") if kode else ("Segoe UI", 8), command=lambda pid=pid, h=hari: self.toggle_jadwal(pid, h))
                     if detail:
                         def show_cell_detail(event, n=nama, h=hari, d=detail):
                             warning = self.peringatan_komposisi_tanggal(h)
-                            text = f"{n} • Tanggal {h} • {d['kode']} • Desa: {d['desa'] or 'Belum dipilih'}"
+                            text_detail = f"{n} • Tanggal {h} • {d['kode']} • Desa: {d['desa'] or 'Belum dipilih'}"
                             if warning:
-                                text += f" • ⚠ {warning}"
-                            self.calendar_detail.config(text=text)
+                                text_detail += f" • ⚠ {warning}"
+                            self.calendar_detail.config(text=text_detail)
                         cell.bind("<Enter>", show_cell_detail)
-                    cell.grid(row=row,column=hari+1,sticky="nsew",padx=1,pady=1)
-        self.calendar_frame.grid_columnconfigure(0,minsize=220)
-        for col in range(2,jumlah_hari+2): self.calendar_frame.grid_columnconfigure(col,minsize=72)
-        # Scroll region mengikuti SELURUH halaman kalender: header, legenda
-        # kegiatan A-Z, ringkasan, dan tabel. Dengan demikian user dapat
-        # menggeser halaman kiri/kanan maupun atas/bawah tanpa kehilangan
-        # bagian atas yang berisi legenda.
+                    cell.grid(row=row, column=hari-1, sticky="nsew", padx=1, pady=1)
+                self.calendar_names_frame.grid_rowconfigure(row, minsize=47)
+                self.calendar_frame.grid_rowconfigure(row, minsize=47)
+
+        self.calendar_names_frame.grid_columnconfigure(0, minsize=42, weight=0)
+        self.calendar_names_frame.grid_columnconfigure(1, minsize=245, weight=1)
+        self.calendar_header_frame.grid_rowconfigure(0, minsize=26)
+        self.calendar_header_frame.grid_rowconfigure(1, minsize=22)
+        self.calendar_names_header_frame.grid_rowconfigure(0, minsize=48)
+        self.calendar_header_frame.update_idletasks()
+        self.calendar_names_header_frame.update_idletasks()
         try:
-            self.calendar_frame.update_idletasks()
-            if hasattr(self, "_update_jadwal_page_region"):
-                self._update_jadwal_page_region()
-            self.jadwal_page_canvas.after_idle(self._update_jadwal_page_region)
+            if hasattr(self, "_refresh_activity_calendar_regions"):
+                self._refresh_activity_calendar_regions()
+                self.after_idle(self._refresh_activity_calendar_regions)
         except Exception:
-            bbox = self.jadwal_page_canvas.bbox("all")
-            if bbox:
-                self.jadwal_page_canvas.configure(scrollregion=bbox)
-        self.jadwal_page_canvas.after_idle(lambda: self._force_canvas_scrollregion(self.jadwal_page_canvas))
+            pass
         self.update_calendar_summary()
+        # Kalender Keseluruhan tidak diubah oleh revisi ini.
         self.load_kalender_keseluruhan()
 
     def pilih_penugasan_keseluruhan(self, pegawai_id, hari):
@@ -3994,8 +4031,9 @@ class App(tk.Tk):
         ):
             return
 
-        for widget in self.overall_calendar_frame.winfo_children():
-            widget.destroy()
+        for target_frame in (self.overall_calendar_frame, self.overall_header_frame, self.overall_names_frame):
+            for widget in target_frame.winfo_children():
+                widget.destroy()
 
         bulan = NAMA_BULAN.index(self.bulan_var.get())
         tahun = int(self.tahun_var.get())
@@ -4084,48 +4122,39 @@ class App(tk.Tk):
             pass
 
         nama_hari = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
-        ttk.Label(
-            self.overall_calendar_frame, text="No.",
-            font=("Segoe UI", 9, "bold"), anchor="center"
-        ).grid(row=0, column=0, rowspan=2, sticky="nsew", padx=1, pady=1)
-        ttk.Label(
-            self.overall_calendar_frame, text="Nama Pegawai",
-            font=("Segoe UI", 9, "bold"), anchor="center"
-        ).grid(row=0, column=1, rowspan=2, sticky="nsew", padx=1, pady=1)
-
         for hari in range(1, jumlah_hari + 1):
             tanggal = datetime(tahun, bulan, hari)
             nonkerja = tanggal.weekday() == 6 or hari in hari_libur
             ttk.Label(
-                self.overall_calendar_frame, text=str(hari),
+                self.overall_header_frame, text=str(hari),
                 font=("Segoe UI", 9, "bold"), anchor="center",
                 style="Holiday.TLabel" if nonkerja else "TLabel"
-            ).grid(row=0, column=hari+1, sticky="nsew", padx=1, pady=(1, 0))
+            ).grid(row=0, column=hari-1, sticky="nsew", padx=1, pady=(1, 0))
             ttk.Label(
-                self.overall_calendar_frame,
+                self.overall_header_frame,
                 text="LIBUR" if nonkerja else nama_hari[tanggal.weekday()],
                 font=("Segoe UI", 7 if nonkerja else 8, "bold" if nonkerja else "normal"),
                 anchor="center",
                 style="Holiday.TLabel" if nonkerja else "TLabel"
-            ).grid(row=1, column=hari+1, sticky="nsew", padx=1, pady=(0, 1))
+            ).grid(row=1, column=hari-1, sticky="nsew", padx=1, pady=(0, 1))
 
         semua_pegawai = sorted(self.pegawai, key=lambda p: str(p[1] or '').lower())
         if not semua_pegawai:
             ttk.Label(
-                self.overall_calendar_frame, text="Belum ada data pegawai aktif.",
+                self.overall_names_frame, text="Belum ada data pegawai aktif.",
                 font=("Segoe UI", 10)
-            ).grid(row=2, column=0, columnspan=jumlah_hari + 2, pady=20)
+            ).grid(row=0, column=0, columnspan=2, pady=20)
             return
 
         for nomor, pegawai in enumerate(semua_pegawai, start=1):
-            row = nomor + 1
+            row = nomor - 1
             pegawai_id = pegawai[0]
             nama = pegawai[1] or "Tanpa Nama"
             ttk.Label(
-                self.overall_calendar_frame, text=str(nomor), anchor="center", padding=(2, 0)
+                self.overall_names_frame, text=str(nomor), anchor="center", padding=(2, 0)
             ).grid(row=row, column=0, sticky="nsew", padx=1, pady=1)
             ttk.Label(
-                self.overall_calendar_frame, text=nama, anchor="w", padding=(5, 0)
+                self.overall_names_frame, text=nama, anchor="w", padding=(5, 0)
             ).grid(row=row, column=1, sticky="nsew", padx=1, pady=1)
 
             for hari in range(1, jumlah_hari + 1):
@@ -4177,32 +4206,20 @@ class App(tk.Tk):
                     )
                     cell.configure(cursor="hand2")
                 cell.bind("<Leave>", lambda event: self.overall_calendar_detail.config(text=""))
-                cell.grid(row=row, column=hari+1, sticky="nsew", padx=1, pady=1)
+                cell.grid(row=row, column=hari-1, sticky="nsew", padx=1, pady=1)
 
-        self.overall_calendar_frame.grid_columnconfigure(0, minsize=220)
-        for col in range(2, jumlah_hari + 2):
+        self.overall_names_frame.grid_columnconfigure(0, minsize=42)
+        self.overall_names_frame.grid_columnconfigure(1, minsize=220)
+        for col in range(jumlah_hari):
+            self.overall_header_frame.grid_columnconfigure(col, minsize=72)
             self.overall_calendar_frame.grid_columnconfigure(col, minsize=72)
-        # Scroll region mengikuti ukuran tabel kalender sebenarnya.
         try:
+            self.overall_header_frame.update_idletasks()
+            self.overall_names_frame.update_idletasks()
             self.overall_calendar_frame.update_idletasks()
-            req_w = max(self.overall_calendar_frame.winfo_reqwidth(), 1)
-            req_h = max(self.overall_calendar_frame.winfo_reqheight(), 1)
-            view_w = max(self.overall_page_canvas.winfo_width(), 1)
-            view_h = max(self.overall_page_canvas.winfo_height(), 1)
-            self.overall_page_canvas.configure(
-                scrollregion=(0, 0, max(req_w, view_w), max(req_h, view_h))
-            )
-            # Pastikan canvas window tidak berubah menjadi lebih kecil dari tabel.
-            if hasattr(self, "_overall_calendar_window_id"):
-                self.overall_page_canvas.itemconfigure(
-                    self._overall_calendar_window_id,
-                    width=max(req_w, view_w)
-                )
+            self._refresh_overall_calendar_regions()
         except Exception:
-            bbox = self.overall_page_canvas.bbox("all")
-            if bbox:
-                self.overall_page_canvas.configure(scrollregion=bbox)
-        self.overall_page_canvas.after_idle(lambda: self._force_canvas_scrollregion(self.overall_page_canvas))
+            pass
 
     def atur_hari_libur(self):
         """Dialog manual untuk menentukan tanggal merah pada bulan aktif."""
@@ -4836,328 +4853,250 @@ class App(tk.Tk):
             conn.close()
 
     def build_jadwal(self):
-        """Kalender Kegiatan dengan scroll halaman 2 arah.
-
-        Seluruh halaman kalender (judul, legenda kegiatan A-Z, ringkasan,
-        dan tabel kalender) berada dalam satu viewport sehingga semuanya
-        dapat digeser atas/bawah dan kiri/kanan ketika konten lebih besar
-        daripada layar.
-        """
+        """Kalender Kegiatan dengan header tanggal tetap saat scroll vertikal."""
         style = ttk.Style(self)
         style.configure("Holiday.TLabel", foreground="#888888", background="#ECECEC")
 
         root = tk.Frame(self.tab_jadwal, bg=UI_BG)
         root.pack(fill="both", expand=True)
-        root.grid_rowconfigure(0, weight=1)
+        root.grid_rowconfigure(1, weight=1)
         root.grid_columnconfigure(0, weight=1)
 
-        # Satu canvas untuk SELURUH halaman kalender. Jangan pisahkan header
-        # dan tabel ke viewport berbeda, supaya legenda kegiatan E-Z juga ikut
-        # bergerak saat user scroll horizontal.
-        viewport = tk.Frame(
-            root, bg=UI_PANEL,
-            highlightbackground=UI_BORDER, highlightthickness=1
-        )
-        viewport.grid(row=0, column=0, sticky="nsew", padx=14, pady=10)
-        viewport.grid_rowconfigure(0, weight=1)
-        viewport.grid_columnconfigure(0, weight=1)
-
-        canvas = tk.Canvas(
-            viewport, bg=UI_BG, highlightthickness=0,
-            xscrollincrement=20, yscrollincrement=20
-        )
-        vscroll = tk.Scrollbar(
-            viewport, orient="vertical", command=canvas.yview,
-            width=18, bg="#94A3B8", troughcolor="#E2E8F0",
-            activebackground="#64748B", relief="flat", bd=0
-        )
-        hscroll = tk.Scrollbar(
-            viewport, orient="horizontal", command=canvas.xview,
-            width=18, bg="#94A3B8", troughcolor="#E2E8F0",
-            activebackground="#64748B", relief="flat", bd=0
-        )
-        canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        vscroll.grid(row=0, column=1, sticky="ns")
-        hscroll.grid(row=1, column=0, sticky="ew")
-
-        # Natural-size content. Lebar minimum mengikuti viewport, tetapi
-        # tidak pernah dipaksa mengecil ketika kalender/legenda lebih lebar.
-        page_content = tk.Frame(canvas, bg=UI_BG)
-        window_id = canvas.create_window((0, 0), window=page_content, anchor="nw")
-
-        self.jadwal_page_canvas = canvas
-        self.jadwal_page_content = page_content
-        self.calendar_canvas = canvas
-
-        header = tk.Frame(page_content, bg=UI_BG)
-        header.pack(fill="x", padx=20, pady=(18, 8))
-
-        tk.Label(
-            header, text="KALENDER PENUGASAN KEGIATAN", bg=UI_BG,
-            font=("Segoe UI Semibold", 15), fg=UI_TEXT
-        ).pack(anchor="w", pady=(0, 3))
-
+        header = tk.Frame(root, bg=UI_BG)
+        header.grid(row=0, column=0, sticky="ew", padx=20, pady=(12, 6))
+        tk.Label(header, text="KALENDER PENUGASAN KEGIATAN", bg=UI_BG,
+                 font=("Segoe UI Semibold", 15), fg=UI_TEXT).pack(anchor="w", pady=(0, 3))
         self.info_kalender = tk.Label(header, text="", bg=UI_BG, fg=UI_MUTED)
         self.info_kalender.pack(anchor="w")
-
         kalender_tools = tk.Frame(header, bg=UI_BG)
-        kalender_tools.pack(fill="x", pady=(10, 0))
-        ttk.Button(
-            kalender_tools, text="⚙ Atur Hari Libur", command=self.atur_hari_libur
-        ).pack(side="left")
+        kalender_tools.pack(fill="x", pady=(8, 0))
+        ttk.Button(kalender_tools, text="⚙ Atur Hari Libur", command=self.atur_hari_libur).pack(side="left")
         self.info_libur = tk.Label(kalender_tools, text="", bg=UI_BG, fg=UI_MUTED)
         self.info_libur.pack(side="left", padx=12)
-
-        # Legend tetap bagian dari page_content, sehingga Kegiatan A-Z ikut
-        # horizontal scroll bersama kalender.
         self.legend_kegiatan = tk.Frame(header, bg=UI_BG)
-        self.legend_kegiatan.pack(fill="x", pady=(8, 0))
+        self.legend_kegiatan.pack(fill="x", pady=(6, 0))
+        self.calendar_detail = tk.Label(header, text="", bg=UI_BG, fg=UI_MUTED, anchor="w")
+        self.calendar_detail.pack(fill="x", pady=(4, 0))
+        self.calendar_summary = tk.Label(header, text="", bg=UI_BG, fg=UI_TEXT,
+                                         justify="left", anchor="w", font=("Segoe UI", 10, "bold"))
+        self.calendar_summary.pack(fill="x", pady=(4, 0))
 
-        self.calendar_detail = tk.Label(
-            header, text="", bg=UI_BG, fg=UI_MUTED, anchor="w"
-        )
-        self.calendar_detail.pack(fill="x", pady=(5, 0))
+        viewport = tk.Frame(root, bg=UI_PANEL, highlightbackground=UI_BORDER, highlightthickness=1)
+        viewport.grid(row=1, column=0, sticky="nsew", padx=14, pady=(2, 12))
+        viewport.grid_columnconfigure(1, weight=1)
+        viewport.grid_rowconfigure(1, weight=1)
 
-        self.calendar_summary = tk.Label(
-            header, text="", bg=UI_BG, fg=UI_TEXT,
-            justify="left", anchor="w", font=("Segoe UI", 10, "bold")
-        )
-        self.calendar_summary.pack(fill="x", pady=(5, 0))
+        # Header pegawai dan header tanggal berada di baris terpisah dari badan tabel.
+        # Dengan begitu header tidak ikut tergulung vertikal.
+        names_header = tk.Frame(viewport, bg="white", width=310, height=48)
+        names_header.grid(row=0, column=0, sticky="nsew")
+        names_header.grid_propagate(False)
+        names_header.grid_columnconfigure(0, minsize=42, weight=0)
+        names_header.grid_columnconfigure(1, minsize=245, weight=1)
 
-        # Tabel kalender berada langsung di halaman yang sama. Karena
-        # page_content memiliki ukuran natural, tabel 31 hari + pegawai
-        # sebanyak apa pun akan memperbesar scrollregion halaman.
-        calendar_shell = tk.Frame(
-            page_content, bg="white",
-            highlightbackground=UI_BORDER, highlightthickness=1
-        )
-        calendar_shell.pack(fill="both", expand=False, padx=20, pady=(4, 16), anchor="nw")
+        date_header_canvas = tk.Canvas(viewport, bg="white", highlightthickness=0,
+                                       height=48, xscrollincrement=20)
+        date_header_canvas.grid(row=0, column=1, sticky="ew")
+        date_header_frame = tk.Frame(date_header_canvas, bg="white")
+        date_header_window = date_header_canvas.create_window((0, 0), window=date_header_frame, anchor="nw")
 
-        calendar_frame = tk.Frame(calendar_shell, bg="white")
-        calendar_frame.pack(fill="both", expand=False, padx=1, pady=1)
-        self.calendar_frame = calendar_frame
+        left_canvas = tk.Canvas(viewport, bg="white", highlightthickness=0, width=310, yscrollincrement=20)
+        left_canvas.grid(row=1, column=0, sticky="nsew")
+        left_frame = tk.Frame(left_canvas, bg="white")
+        left_window = left_canvas.create_window((0, 0), window=left_frame, anchor="nw")
+        left_frame.grid_columnconfigure(0, minsize=42, weight=0)
+        left_frame.grid_columnconfigure(1, minsize=245, weight=1)
 
-        # Hitung scrollregion dari seluruh halaman, bukan hanya tabel.
-        def update_page_region(event=None):
+        right_canvas = tk.Canvas(viewport, bg="white", highlightthickness=0,
+                                 xscrollincrement=20, yscrollincrement=20)
+        right_canvas.grid(row=1, column=1, sticky="nsew")
+        right_frame = tk.Frame(right_canvas, bg="white")
+        right_window = right_canvas.create_window((0, 0), window=right_frame, anchor="nw")
+
+        vscroll = ttk.Scrollbar(viewport, orient="vertical",
+                                command=lambda *args: (left_canvas.yview(*args), right_canvas.yview(*args)))
+        vscroll.grid(row=1, column=2, sticky="ns")
+        hscroll = ttk.Scrollbar(viewport, orient="horizontal")
+        hscroll.grid(row=2, column=1, sticky="ew")
+
+        def horizontal_scroll(*args):
+            date_header_canvas.xview(*args)
+            right_canvas.xview(*args)
+
+        hscroll.configure(command=horizontal_scroll)
+        date_header_canvas.configure(xscrollcommand=hscroll.set)
+        right_canvas.configure(xscrollcommand=hscroll.set, yscrollcommand=vscroll.set)
+        left_canvas.configure(yscrollcommand=vscroll.set)
+
+        self.calendar_names_header_frame = names_header
+        self.calendar_header_frame = date_header_frame
+        self.calendar_names_canvas = left_canvas
+        self.calendar_canvas = right_canvas
+        self.calendar_names_frame = left_frame
+        self.calendar_frame = right_frame
+
+        def refresh_regions(event=None):
             try:
-                page_content.update_idletasks()
-                req_w = max(page_content.winfo_reqwidth(), 1)
-                req_h = max(page_content.winfo_reqheight(), 1)
-                view_w = max(canvas.winfo_width(), 1)
-                canvas.itemconfigure(window_id, width=max(req_w, view_w))
-                canvas.configure(
-                    scrollregion=(0, 0, max(req_w, view_w), max(req_h, canvas.winfo_height()))
-                )
+                for frame in (names_header, date_header_frame, left_frame, right_frame):
+                    frame.update_idletasks()
+                date_width = max(date_header_frame.winfo_reqwidth(), date_header_canvas.winfo_width())
+                body_width = max(right_frame.winfo_reqwidth(), right_canvas.winfo_width())
+                left_width = max(left_frame.winfo_reqwidth(), left_canvas.winfo_width())
+                date_header_canvas.itemconfigure(date_header_window, width=date_width)
+                right_canvas.itemconfigure(right_window, width=body_width)
+                left_canvas.itemconfigure(left_window, width=left_width)
+                date_header_canvas.configure(scrollregion=(0, 0, date_width, max(date_header_frame.winfo_reqheight(), 1)))
+                right_canvas.configure(scrollregion=(0, 0, body_width, max(right_frame.winfo_reqheight(), 1)))
+                left_canvas.configure(scrollregion=(0, 0, left_width, max(left_frame.winfo_reqheight(), 1)))
+                # Pastikan dua header dan dua panel punya lebar kolom yang sama.
+                date_header_canvas.xview_moveto(right_canvas.xview()[0])
             except tk.TclError:
                 pass
 
-        def resize_viewport(event=None):
-            update_page_region()
+        for widget in (date_header_frame, left_frame, right_frame, date_header_canvas, left_canvas, right_canvas):
+            widget.bind("<Configure>", refresh_regions, add="+")
 
-        page_content.bind("<Configure>", update_page_region)
-        canvas.bind("<Configure>", resize_viewport)
+        def sync_mousewheel(event):
+            delta = int(-event.delta / 120)
+            left_canvas.yview_scroll(delta, "units")
+            right_canvas.yview_scroll(delta, "units")
+            return "break"
 
-        # Mouse wheel berlaku di seluruh isi kalender, termasuk tombol/legend.
-        def is_inside_calendar(event):
-            try:
-                widget = canvas.winfo_containing(event.x_root, event.y_root)
-                if widget is None:
-                    return False
-                current = widget
-                while current is not None:
-                    if current == canvas or current == page_content:
-                        return True
-                    current = getattr(current, "master", None)
-            except Exception:
-                return False
-            return False
+        def horizontal_mousewheel(event):
+            right_canvas.xview_scroll(int(-event.delta / 120), "units")
+            date_header_canvas.xview_scroll(int(-event.delta / 120), "units")
+            return "break"
 
-        def on_wheel(event):
-            if not is_inside_calendar(event):
-                return
-            canvas.yview_scroll(int(-event.delta / 120), "units")
-
-        def on_shift_wheel(event):
-            if not is_inside_calendar(event):
-                return
-            canvas.xview_scroll(int(-event.delta / 120), "units")
-
-        canvas.bind("<MouseWheel>", on_wheel, add="+")
-        canvas.bind("<Shift-MouseWheel>", on_shift_wheel, add="+")
-        canvas.bind("<Button-4>", lambda e: canvas.yview_scroll(-2, "units"), add="+")
-        canvas.bind("<Button-5>", lambda e: canvas.yview_scroll(2, "units"), add="+")
-
-        # Simpan helper agar load_kalender dapat memaksa ukuran halaman setelah
-        # tabel selesai dibangun.
-        self._update_jadwal_page_region = update_page_region
-        self._jadwal_page_window_id = window_id
+        for widget in (left_canvas, right_canvas, left_frame, right_frame):
+            widget.bind("<MouseWheel>", sync_mousewheel, add="+")
+            widget.bind("<Shift-MouseWheel>", horizontal_mousewheel, add="+")
+        for widget in (date_header_canvas, date_header_frame):
+            widget.bind("<Shift-MouseWheel>", horizontal_mousewheel, add="+")
+        self._refresh_activity_calendar_regions = refresh_regions
 
     def build_kalender_keseluruhan(self, parent):
-        """Kalender Keseluruhan dengan scrollbar vertikal + horizontal yang nyata."""
+        """Kalender Keseluruhan dengan header tanggal tetap dan nama pegawai beku."""
         ttk.Style(self).configure("Holiday.TLabel", foreground="#888888", background="#ECECEC")
-
         root = tk.Frame(parent, bg=UI_BG)
         root.pack(fill="both", expand=True)
-
         header = tk.Frame(root, bg=UI_BG)
         header.pack(fill="x", padx=20, pady=(18, 8))
-
-        tk.Label(
-            header, text="KALENDER KESELURUHAN", bg=UI_BG,
-            font=("Segoe UI Semibold", 15), fg=UI_TEXT
-        ).pack(anchor="w", pady=(0, 3))
+        tk.Label(header, text="KALENDER KESELURUHAN", bg=UI_BG,
+                 font=("Segoe UI Semibold", 15), fg=UI_TEXT).pack(anchor="w", pady=(0, 3))
         self.overall_info_kalender = tk.Label(header, text="", bg=UI_BG, fg=UI_MUTED)
         self.overall_info_kalender.pack(anchor="w")
-
         tools = tk.Frame(header, bg=UI_BG)
         tools.pack(fill="x", pady=(10, 0))
-        ttk.Button(
-            tools, text="⚙ Atur Hari Libur", command=self.atur_hari_libur
-        ).pack(side="left")
+        ttk.Button(tools, text="⚙ Atur Hari Libur", command=self.atur_hari_libur).pack(side="left")
         self.overall_info_libur = tk.Label(tools, text="", bg=UI_BG, fg=UI_MUTED)
         self.overall_info_libur.pack(side="left", padx=12)
 
-        # Legend kegiatan memiliki scrollbar horizontal sendiri.
-        # Jadi ketika kegiatan sudah A-Z, user tetap dapat menggeser sampai
-        # Kegiatan L, M, ... Z tanpa menggeser seluruh kalender.
         legend_holder = tk.Frame(header, bg=UI_BG)
         legend_holder.pack(fill="x", pady=(10, 0))
-        self.overall_legend_canvas = tk.Canvas(
-            legend_holder, bg=UI_BG, highlightthickness=0, height=36
-        )
+        self.overall_legend_canvas = tk.Canvas(legend_holder, bg=UI_BG, highlightthickness=0, height=36)
         self.overall_legend_canvas.pack(fill="x", expand=True)
-        self.overall_legend_scroll = tk.Scrollbar(
-            legend_holder, orient="horizontal",
-            command=self.overall_legend_canvas.xview,
-            width=14, bg="#94A3B8", troughcolor="#E2E8F0",
-            activebackground="#64748B", relief="flat", bd=0
-        )
+        self.overall_legend_scroll = tk.Scrollbar(legend_holder, orient="horizontal",
+            command=self.overall_legend_canvas.xview, width=14, bg="#94A3B8",
+            troughcolor="#E2E8F0", activebackground="#64748B", relief="flat", bd=0)
         self.overall_legend_scroll.pack(fill="x", pady=(2, 0))
-        self.overall_legend_canvas.configure(
-            xscrollcommand=self.overall_legend_scroll.set
-        )
-        self.overall_legend_kegiatan = tk.Frame(
-            self.overall_legend_canvas, bg=UI_BG
-        )
+        self.overall_legend_canvas.configure(xscrollcommand=self.overall_legend_scroll.set)
+        self.overall_legend_kegiatan = tk.Frame(self.overall_legend_canvas, bg=UI_BG)
         self._overall_legend_window = self.overall_legend_canvas.create_window(
-            (0, 0), window=self.overall_legend_kegiatan, anchor="nw"
-        )
-        self.overall_legend_kegiatan.bind(
-            "<Configure>",
-            lambda e: self.overall_legend_canvas.configure(
-                scrollregion=self.overall_legend_canvas.bbox("all")
-            )
-        )
-        self.overall_legend_canvas.bind(
-            "<Configure>",
-            lambda e: self.overall_legend_canvas.itemconfigure(
-                self._overall_legend_window,
-                height=max(34, e.height)
-            )
-        )
-        self.overall_legend_canvas.bind(
-            "<MouseWheel>",
-            lambda e: self.overall_legend_canvas.xview_scroll(
-                int(-e.delta / 120), "units"
-            ), add="+"
-        )
-        self.overall_legend_canvas.bind(
-            "<Shift-MouseWheel>",
-            lambda e: self.overall_legend_canvas.xview_scroll(
-                int(-e.delta / 120), "units"
-            ), add="+"
-        )
-        self.overall_legend_canvas.bind(
-            "<Button-4>",
-            lambda e: self.overall_legend_canvas.xview_scroll(-2, "units"),
-            add="+"
-        )
-        self.overall_legend_canvas.bind(
-            "<Button-5>",
-            lambda e: self.overall_legend_canvas.xview_scroll(2, "units"),
-            add="+"
-        )
-
-        self.overall_calendar_detail = tk.Label(
-            header, text="", bg=UI_BG, fg=UI_MUTED, anchor="w"
-        )
+            (0, 0), window=self.overall_legend_kegiatan, anchor="nw")
+        self.overall_legend_kegiatan.bind("<Configure>", lambda e:
+            self.overall_legend_canvas.configure(scrollregion=self.overall_legend_canvas.bbox("all")))
+        self.overall_legend_canvas.bind("<Configure>", lambda e:
+            self.overall_legend_canvas.itemconfigure(self._overall_legend_window, height=max(34, e.height)))
+        self.overall_calendar_detail = tk.Label(header, text="", bg=UI_BG, fg=UI_MUTED, anchor="w")
         self.overall_calendar_detail.pack(fill="x", pady=(5, 0))
 
-        viewport = tk.Frame(
-            root, bg=UI_PANEL,
-            highlightbackground=UI_BORDER, highlightthickness=1
-        )
+        viewport = tk.Frame(root, bg=UI_PANEL, highlightbackground=UI_BORDER, highlightthickness=1)
         viewport.pack(fill="both", expand=True, padx=20, pady=(4, 16))
-        viewport.grid_rowconfigure(0, weight=1)
-        viewport.grid_columnconfigure(0, weight=1)
+        viewport.grid_rowconfigure(1, weight=1)
+        viewport.grid_columnconfigure(1, weight=1)
 
-        canvas = tk.Canvas(
-            viewport, bg="white", highlightthickness=0,
-            xscrollincrement=20, yscrollincrement=20
-        )
-        vscroll = tk.Scrollbar(
-            viewport, orient="vertical", command=canvas.yview,
-            width=18, bg="#94A3B8", troughcolor="#E2E8F0",
-            activebackground="#64748B", relief="flat", bd=0
-        )
-        hscroll = tk.Scrollbar(
-            viewport, orient="horizontal", command=canvas.xview,
-            width=18, bg="#94A3B8", troughcolor="#E2E8F0",
-            activebackground="#64748B", relief="flat", bd=0
-        )
-        canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        vscroll.grid(row=0, column=1, sticky="ns")
-        hscroll.grid(row=1, column=0, sticky="ew")
+        names_header = tk.Frame(viewport, bg="white", width=270, height=48)
+        names_header.grid(row=0, column=0, sticky="nsew")
+        names_header.grid_propagate(False)
+        names_header.grid_columnconfigure(0, minsize=42, weight=0)
+        names_header.grid_columnconfigure(1, minsize=220, weight=1)
+        ttk.Label(names_header, text="No.", anchor="center", font=("Segoe UI", 9, "bold")).grid(
+            row=0, column=0, sticky="nsew", padx=1, pady=1)
+        ttk.Label(names_header, text="Nama Pegawai", anchor="center", font=("Segoe UI", 9, "bold")).grid(
+            row=0, column=1, sticky="nsew", padx=1, pady=1)
 
-        calendar_frame = tk.Frame(canvas, bg="white")
-        window_id = canvas.create_window((0, 0), window=calendar_frame, anchor="nw")
+        date_header_canvas = tk.Canvas(viewport, bg="white", highlightthickness=0, height=48, xscrollincrement=20)
+        date_header_canvas.grid(row=0, column=1, sticky="ew")
+        date_header_frame = tk.Frame(date_header_canvas, bg="white")
+        date_header_window = date_header_canvas.create_window((0, 0), window=date_header_frame, anchor="nw")
 
-        self.overall_page_canvas = canvas
-        self.overall_calendar_canvas = canvas
-        self.overall_calendar_frame = calendar_frame
-        self._overall_calendar_window_id = window_id
+        names_canvas = tk.Canvas(viewport, bg="white", highlightthickness=0, width=270, yscrollincrement=20)
+        names_canvas.grid(row=1, column=0, sticky="nsew")
+        names_frame = tk.Frame(names_canvas, bg="white")
+        names_window = names_canvas.create_window((0, 0), window=names_frame, anchor="nw")
+        names_frame.grid_columnconfigure(0, minsize=42, weight=0)
+        names_frame.grid_columnconfigure(1, minsize=220, weight=1)
 
-        def update_region(event=None):
+        dates_canvas = tk.Canvas(viewport, bg="white", highlightthickness=0, xscrollincrement=20, yscrollincrement=20)
+        dates_canvas.grid(row=1, column=1, sticky="nsew")
+        dates_frame = tk.Frame(dates_canvas, bg="white")
+        dates_window = dates_canvas.create_window((0, 0), window=dates_frame, anchor="nw")
+
+        vscroll = tk.Scrollbar(viewport, orient="vertical",
+            command=lambda *a: (names_canvas.yview(*a), dates_canvas.yview(*a)), width=18)
+        vscroll.grid(row=1, column=2, sticky="ns")
+        hscroll = tk.Scrollbar(viewport, orient="horizontal", width=18)
+        hscroll.grid(row=2, column=1, sticky="ew")
+        def xscroll(*args):
+            date_header_canvas.xview(*args)
+            dates_canvas.xview(*args)
+        hscroll.configure(command=xscroll)
+        date_header_canvas.configure(xscrollcommand=hscroll.set)
+        dates_canvas.configure(xscrollcommand=hscroll.set, yscrollcommand=vscroll.set)
+        names_canvas.configure(yscrollcommand=vscroll.set)
+
+        self.overall_names_header = names_header
+        self.overall_header_frame = date_header_frame
+        self.overall_names_canvas = names_canvas
+        self.overall_names_frame = names_frame
+        self.overall_calendar_canvas = dates_canvas
+        self.overall_calendar_frame = dates_frame
+        self.overall_page_canvas = dates_canvas
+
+        def refresh_regions(event=None):
             try:
-                calendar_frame.update_idletasks()
-                req_w = max(calendar_frame.winfo_reqwidth(), 1)
-                req_h = max(calendar_frame.winfo_reqheight(), 1)
-                canvas.configure(scrollregion=(0, 0, req_w, req_h))
+                for f in (date_header_frame, names_frame, dates_frame):
+                    f.update_idletasks()
+                dw = max(date_header_frame.winfo_reqwidth(), date_header_canvas.winfo_width())
+                nw = max(names_frame.winfo_reqwidth(), names_canvas.winfo_width())
+                bw = max(dates_frame.winfo_reqwidth(), dates_canvas.winfo_width())
+                date_header_canvas.itemconfigure(date_header_window, width=dw)
+                names_canvas.itemconfigure(names_window, width=nw)
+                dates_canvas.itemconfigure(dates_window, width=bw)
+                date_header_canvas.configure(scrollregion=(0, 0, dw, max(date_header_frame.winfo_reqheight(), 1)))
+                names_canvas.configure(scrollregion=(0, 0, nw, max(names_frame.winfo_reqheight(), 1)))
+                dates_canvas.configure(scrollregion=(0, 0, bw, max(dates_frame.winfo_reqheight(), 1)))
+                date_header_canvas.xview_moveto(dates_canvas.xview()[0])
             except tk.TclError:
                 pass
-
-        def resize_viewport(event=None):
-            try:
-                calendar_frame.update_idletasks()
-                req_w = max(calendar_frame.winfo_reqwidth(), 1)
-                # Jangan memaksa window kalender mengikuti viewport.
-                # Lebar kalender harus tetap sebesar tabel sebenarnya supaya
-                # horizontal scroll benar-benar menampilkan kolom tanggal.
-                # Jika tabel lebih kecil dari viewport, barulah isi diperlebar
-                # sampai viewport agar tidak ada ruang aneh.
-                view_w = max(int(event.width) if event is not None else canvas.winfo_width(), 1)
-                canvas.itemconfigure(window_id, width=max(req_w, view_w))
-                canvas.configure(scrollregion=(0, 0, max(req_w, view_w),
-                                               max(calendar_frame.winfo_reqheight(), canvas.winfo_height(), 1)))
-            except (tk.TclError, ValueError, TypeError):
-                pass
-
-        calendar_frame.bind("<Configure>", update_region)
-        canvas.bind("<Configure>", resize_viewport)
-        canvas.bind(
-            "<MouseWheel>",
-            lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"),
-            add="+"
-        )
-        canvas.bind(
-            "<Shift-MouseWheel>",
-            lambda e: canvas.xview_scroll(int(-e.delta / 120), "units"),
-            add="+"
-        )
-        canvas.bind("<Button-4>", lambda e: canvas.yview_scroll(-2, "units"), add="+")
-        canvas.bind("<Button-5>", lambda e: canvas.yview_scroll(2, "units"), add="+")
+        for w in (date_header_frame, names_frame, dates_frame, date_header_canvas, names_canvas, dates_canvas):
+            w.bind("<Configure>", refresh_regions, add="+")
+        def wheel(event):
+            delta = int(-event.delta / 120) * 3
+            names_canvas.yview_scroll(delta, "units")
+            dates_canvas.yview_scroll(delta, "units")
+            return "break"
+        def shift_wheel(event):
+            delta = int(-event.delta / 120) * 3
+            dates_canvas.xview_scroll(delta, "units")
+            date_header_canvas.xview_scroll(delta, "units")
+            return "break"
+        for w in (names_canvas, dates_canvas, names_frame, dates_frame):
+            w.bind("<MouseWheel>", wheel, add="+")
+            w.bind("<Shift-MouseWheel>", shift_wheel, add="+")
+        for w in (date_header_canvas, date_header_frame):
+            w.bind("<Shift-MouseWheel>", shift_wheel, add="+")
+        self._refresh_overall_calendar_regions = refresh_regions
 
     def buka_kalender_keseluruhan(self):
         """Buka Kalender Keseluruhan tepat di tengah aplikasi utama."""
@@ -5342,6 +5281,10 @@ class App(tk.Tk):
             for attr in (
                 "overall_calendar_frame",
                 "overall_calendar_canvas",
+                "overall_header_frame",
+                "overall_names_frame",
+                "overall_names_canvas",
+                "overall_names_header",
                 "overall_info_kalender",
                 "overall_info_libur",
                 "overall_legend_kegiatan",
