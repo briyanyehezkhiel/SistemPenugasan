@@ -1,13 +1,67 @@
 import sqlite3
 import os
+import shutil
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "sistem.db")
 
+# ============================================================
+# LOKASI DATABASE USER
+# ============================================================
+
+APP_NAME = "SistemPenugasan"
+
+LOCAL_APPDATA = os.getenv(
+    "LOCALAPPDATA",
+    os.path.join(os.path.expanduser("~"), "AppData", "Local")
+)
+
+APP_DATA_DIR = os.path.join(LOCAL_APPDATA, APP_NAME)
+
+os.makedirs(APP_DATA_DIR, exist_ok=True)
+
+DB_PATH = os.path.join(APP_DATA_DIR, "sistem.db")
+
+
+# ============================================================
+# MIGRASI DATABASE LAMA
+# ============================================================
+
+OLD_DB_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "sistem.db"
+)
+
+
+def migrate_old_database():
+    """
+    Jika masih ada sistem.db lama di folder program,
+    salin ke lokasi AppData hanya jika database baru belum ada.
+    """
+
+    if (
+        os.path.exists(OLD_DB_PATH)
+        and OLD_DB_PATH != DB_PATH
+        and not os.path.exists(DB_PATH)
+    ):
+        try:
+            shutil.copy2(OLD_DB_PATH, DB_PATH)
+        except Exception:
+            pass
+
+
+migrate_old_database()
+
+
+# ============================================================
+# CONNECTION
+# ============================================================
 
 def get_connection():
     return sqlite3.connect(DB_PATH)
 
+
+# ============================================================
+# CREATE DATABASE
+# ============================================================
 
 def create_database():
 
