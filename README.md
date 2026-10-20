@@ -6,11 +6,11 @@ Aplikasi desktop untuk membantu pengelolaan penugasan pegawai berdasarkan kegiat
 
 Versi aplikasi yang siap digunakan dapat diunduh melalui:
 
-**[Download Sistem Penugasan Pegawai v1.0.0](../../releases/latest)**
+**[Download Sistem Penugasan Pegawai v1.1.1](../../releases/latest)**
 
 Installer yang tersedia:
 
-`SistemPenugasan-Setup-v1.0.0.exe`
+`SistemPenugasan-Setup-v1.1.1.exe`
 
 ## ✨ Fitur
 
@@ -52,8 +52,8 @@ Database tidak disimpan di dalam folder instalasi aplikasi sehingga data penggun
 
 ## 📌 Status
 
-**Version 1.0.0 — Initial Release**
+**Version 1.1.1 - Latest Release**
 
-Versi ini merupakan rilis awal yang telah disiapkan untuk penggunaan dan pengujian.
+Versi ini mencakup penyempurnaan tata letak dan scrolling kalender keseluruhan, serta pembaruan aplikasi.
 
-Pengembangan fitur dan penyempurnaan akan dilakukan pada versi berikutnya.
+Lihat Release Notes untuk mengetahui riwayat versi dan perubahan pada setiap rilis.
