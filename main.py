@@ -9,6 +9,11 @@ import math
 import time
 import re
 import json
+import os
+import tempfile
+import subprocess
+import threading
+import urllib.request
 
 try:
     from openpyxl import Workbook, load_workbook
@@ -52,6 +57,8 @@ def configure_windows_dpi():
 # =========================================================
 # KONFIGURASI
 # =========================================================
+APP_VERSION = "1.1.2"
+GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/briyanyehezkhiel/SistemPenugasan/releases/latest"
 
 BAGIAN = []
 
@@ -852,6 +859,133 @@ class App(tk.Tk):
         self.load_bagian_data()
         self.load_kalender()
 
+        # Periksa release terbaru setelah UI selesai ditampilkan.
+        self.after(1800, self.check_for_updates)
+
+    def check_for_updates(self, manual=False):
+        """Periksa GitHub Releases di thread terpisah agar UI tidak macet."""
+        if manual:
+            self.update_check_button = getattr(self, "update_check_button", None)
+
+        def worker():
+            try:
+                request = urllib.request.Request(
+                    GITHUB_LATEST_RELEASE_API,
+                    headers={"User-Agent": "SistemPenugasanPegawai-Updater", "Accept": "application/vnd.github+json"}
+                )
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    release = json.loads(response.read().decode("utf-8"))
+
+                latest = str(release.get("tag_name", "")).strip().lstrip("vV")
+                current_parts = self._version_parts(APP_VERSION)
+                latest_parts = self._version_parts(latest)
+                if not latest:
+                    if manual:
+                        self.after(0, lambda: messagebox.showwarning(
+                            "Pemeriksaan update", "GitHub tidak mengembalikan informasi versi yang valid.", parent=self))
+                    return
+                if latest_parts <= current_parts:
+                    if manual:
+                        self.after(0, lambda: messagebox.showinfo(
+                            "Pemeriksaan update",
+                            f"Aplikasi sudah menggunakan versi terbaru.\n\nVersi saat ini: {APP_VERSION}\nVersi GitHub: {latest}",
+                            parent=self))
+                    return
+
+                installer = next((asset for asset in release.get("assets", [])
+                                  if str(asset.get("name", "")).lower().endswith(".exe")
+                                  and "setup" in str(asset.get("name", "")).lower()), None)
+                if not installer or not installer.get("browser_download_url"):
+                    self.after(0, lambda: messagebox.showinfo(
+                        "Pembaruan tersedia",
+                        f"Versi {latest} tersedia, tetapi installer belum dilampirkan pada GitHub Release.\n\n"
+                        "Silakan buka halaman release untuk mengunduhnya.", parent=self))
+                    return
+
+                release_url = release.get("html_url", "https://github.com/briyanyehezkhiel/SistemPenugasan/releases/latest")
+                self.after(0, lambda: self._offer_update(latest, installer["browser_download_url"], release_url))
+            except Exception as exc:
+                # Koneksi internet/API gagal tidak boleh menghalangi aplikasi digunakan.
+                if manual:
+                    self.after(0, lambda err=str(exc): messagebox.showwarning(
+                        "Pemeriksaan update gagal",
+                        "Tidak dapat memeriksa GitHub saat ini. Periksa koneksi internet lalu coba lagi.\n\n" + err,
+                        parent=self))
+                return
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _version_parts(version):
+        try:
+            return tuple(int(part) for part in re.findall(r"\d+", version))
+        except Exception:
+            return (0,)
+
+    def _offer_update(self, latest, download_url, release_url):
+        if not self.winfo_exists():
+            return
+        answer = messagebox.askyesno(
+            "Pembaruan tersedia",
+            f"Versi yang digunakan: {APP_VERSION}\nVersi terbaru: {latest}\n\n"
+            "Unduh dan jalankan installer terbaru sekarang?\n"
+            "Simpan pekerjaan terlebih dahulu sebelum melanjutkan.",
+            parent=self
+        )
+        if answer:
+            self._download_update(download_url, release_url, latest)
+
+    def _download_update(self, download_url, release_url, latest):
+        progress = tk.Toplevel(self)
+        progress.title("Pembaruan aplikasi")
+        progress.transient(self)
+        progress.resizable(False, False)
+        ttk.Label(progress, text=f"Mengunduh installer versi {latest}...").pack(padx=24, pady=(20, 10))
+        bar = ttk.Progressbar(progress, mode="indeterminate", length=300)
+        bar.pack(padx=24, pady=8)
+        bar.start(10)
+        ttk.Label(progress, text="Mohon tunggu dan jangan matikan aplikasi.").pack(padx=24, pady=(4, 20))
+        self.center_window(progress, self)
+
+        def worker():
+            path = None
+            try:
+                request = urllib.request.Request(download_url, headers={"User-Agent": "SistemPenugasanPegawai-Updater"})
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    data = response.read()
+                if not data or len(data) < 100_000:
+                    raise ValueError("File installer yang diunduh tidak valid atau terlalu kecil.")
+                fd, path = tempfile.mkstemp(prefix="SistemPenugasan-Setup-", suffix=".exe")
+                with os.fdopen(fd, "wb") as file:
+                    file.write(data)
+                self.after(0, lambda: self._launch_update(path, progress))
+            except Exception as exc:
+                if path and os.path.exists(path):
+                    try: os.remove(path)
+                    except OSError: pass
+                self.after(0, lambda err=str(exc): self._update_failed(err, progress, release_url))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _launch_update(self, installer_path, progress):
+        try:
+            progress.destroy()
+            # Jalankan installer biasa agar Windows dapat meminta izin/konfirmasi pengguna.
+            subprocess.Popen([installer_path], close_fds=True)
+            self.destroy()
+        except Exception as exc:
+            messagebox.showerror("Gagal menjalankan installer", str(exc), parent=self)
+
+    def _update_failed(self, error, progress, release_url):
+        try: progress.destroy()
+        except Exception: pass
+        messagebox.showerror(
+            "Pembaruan gagal",
+            "Installer tidak berhasil diunduh. Periksa koneksi internet atau unduh manual dari GitHub Releases.\n\n" + error,
+            parent=self
+        )
+        # Tautan tetap tersedia untuk dibuka manual bila diperlukan.
+
     def toggle_fullscreen(self, event=None):
         self._fullscreen = not getattr(self, "_fullscreen", False)
         self.attributes("-fullscreen", self._fullscreen)
@@ -1378,6 +1512,21 @@ class App(tk.Tk):
             font=("Segoe UI", 9)
         )
         self.header_period.pack(anchor="w", pady=(1, 0))
+
+        self.update_check_button = tk.Button(
+            header,
+            text="Periksa Update",
+            command=lambda: self.check_for_updates(manual=True),
+            bg="#FFFFFF",
+            fg=UI_TEXT,
+            activebackground="#E5E7EB",
+            relief="flat",
+            padx=14,
+            pady=7,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2"
+        )
+        self.update_check_button.pack(side="right", padx=20, pady=16)
 
     # =====================================================
     # MAIN
@@ -3598,7 +3747,6 @@ class App(tk.Tk):
         bulan = NAMA_BULAN.index(self.bulan_var.get())
         tahun = int(self.tahun_var.get())
         jumlah_hari = calendar.monthrange(tahun, bulan)[1]
-        self._activity_calendar_day_count = jumlah_hari
         hari_libur = load_hari_libur(self.periode_id)
 
         conn = get_connection()
@@ -3648,8 +3796,8 @@ class App(tk.Tk):
             nonkerja = tanggal.weekday() == 6 or hari in hari_libur
             ttk.Label(self.calendar_header_frame, text=str(hari), font=("Segoe UI", 9, "bold"), anchor="center", style="Holiday.TLabel" if nonkerja else "TLabel").grid(row=0, column=hari-1, sticky="nsew", padx=1, pady=(1, 0))
             ttk.Label(self.calendar_header_frame, text="LIBUR" if nonkerja else nama_hari[tanggal.weekday()], font=("Segoe UI", 7 if nonkerja else 8, "bold" if nonkerja else "normal"), anchor="center", style="Holiday.TLabel" if nonkerja else "TLabel").grid(row=1, column=hari-1, sticky="nsew", padx=1, pady=(0, 1))
-            self.calendar_header_frame.grid_columnconfigure(hari-1, minsize=78, weight=0)
-            self.calendar_frame.grid_columnconfigure(hari-1, minsize=78, weight=0)
+            self.calendar_header_frame.grid_columnconfigure(hari-1, minsize=78, weight=0, uniform="activity_day_columns")
+            self.calendar_frame.grid_columnconfigure(hari-1, minsize=78, weight=0, uniform="activity_day_columns")
 
         anggota_ids = {r[0] for r in anggota_rows}
         semua_pegawai = sorted([p for p in self.pegawai if p[0] in anggota_ids], key=lambda p: str(p[1] or "").lower())
@@ -3670,12 +3818,12 @@ class App(tk.Tk):
                     nonkerja = tanggal.weekday() == 6 or hari in hari_libur
                     detail = jadwal_map.get((pid, hari))
                     if nonkerja:
-                        cell = tk.Button(self.calendar_frame, text="LIBUR", width=6, wraplength=68, justify="center", state="disabled", disabledforeground="#888888", bg="#F1F3F5", relief="solid", bd=1)
+                        cell = tk.Button(self.calendar_frame, text="LIBUR", width=6, state="disabled", disabledforeground="#888888", bg="#F1F3F5", relief="solid", bd=1, font=("Segoe UI", 8))
                     else:
                         kode = detail["kode"] if detail else ""
                         desa = detail["desa"] if detail else ""
                         text = kode + (f"\n{desa}" if desa else "")
-                        cell = tk.Button(self.calendar_frame, text=text, width=6, wraplength=68, justify="center", height=2, bg=self.calendar_colors.get(kode, "#FFFFFF") if detail else "#FFFFFF", relief="solid", bd=1, font=("Segoe UI", 8, "bold") if kode else ("Segoe UI", 8), command=lambda pid=pid, h=hari: self.toggle_jadwal(pid, h))
+                        cell = tk.Button(self.calendar_frame, text=text, width=6, height=2, wraplength=64, bg=self.calendar_colors.get(kode, "#FFFFFF") if detail else "#FFFFFF", relief="solid", bd=1, font=("Segoe UI", 8, "bold") if kode else ("Segoe UI", 8), command=lambda pid=pid, h=hari: self.toggle_jadwal(pid, h))
                     if detail:
                         def show_cell_detail(event, n=nama, h=hari, d=detail):
                             warning = self.peringatan_komposisi_tanggal(h)
@@ -4940,26 +5088,17 @@ class App(tk.Tk):
             try:
                 for frame in (names_header, date_header_frame, left_frame, right_frame):
                     frame.update_idletasks()
-                # Header tanggal dan badan jadwal WAJIB memakai rentang piksel
-                # horizontal yang sama. Jika scrollregion dihitung sendiri-sendiri,
-                # xview memakai pecahan berbeda dan kolom akan bergeser saat scroll.
-                day_count = max(1, int(getattr(self, "_activity_calendar_day_count", 31)))
-                shared_content_width = max(day_count * 80, date_header_canvas.winfo_width(), right_canvas.winfo_width())
-                date_header_frame.grid_propagate(True)
-                right_frame.grid_propagate(True)
-                date_header_canvas.itemconfigure(date_header_window, width=shared_content_width)
-                right_canvas.itemconfigure(right_window, width=shared_content_width)
+                date_width = max(date_header_frame.winfo_reqwidth(), date_header_canvas.winfo_width())
+                body_width = max(right_frame.winfo_reqwidth(), right_canvas.winfo_width())
                 left_width = max(left_frame.winfo_reqwidth(), left_canvas.winfo_width())
+                date_header_canvas.itemconfigure(date_header_window, width=date_width)
+                right_canvas.itemconfigure(right_window, width=body_width)
                 left_canvas.itemconfigure(left_window, width=left_width)
-                shared_height_header = max(date_header_frame.winfo_reqheight(), 1)
-                shared_height_body = max(right_frame.winfo_reqheight(), 1)
-                date_header_canvas.configure(scrollregion=(0, 0, shared_content_width, shared_height_header))
-                right_canvas.configure(scrollregion=(0, 0, shared_content_width, shared_height_body))
+                date_header_canvas.configure(scrollregion=(0, 0, date_width, max(date_header_frame.winfo_reqheight(), 1)))
+                right_canvas.configure(scrollregion=(0, 0, body_width, max(right_frame.winfo_reqheight(), 1)))
                 left_canvas.configure(scrollregion=(0, 0, left_width, max(left_frame.winfo_reqheight(), 1)))
-                # Samakan posisi aktual dalam piksel, bukan sekadar memanggil
-                # xview dengan pecahan dari dua scrollregion yang berbeda.
-                right_fraction = right_canvas.xview()[0]
-                date_header_canvas.xview_moveto(right_fraction)
+                # Pastikan dua header dan dua panel punya lebar kolom yang sama.
+                date_header_canvas.xview_moveto(right_canvas.xview()[0])
             except tk.TclError:
                 pass
 
