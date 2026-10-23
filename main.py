@@ -3598,6 +3598,7 @@ class App(tk.Tk):
         bulan = NAMA_BULAN.index(self.bulan_var.get())
         tahun = int(self.tahun_var.get())
         jumlah_hari = calendar.monthrange(tahun, bulan)[1]
+        self._activity_calendar_day_count = jumlah_hari
         hari_libur = load_hari_libur(self.periode_id)
 
         conn = get_connection()
@@ -3669,12 +3670,12 @@ class App(tk.Tk):
                     nonkerja = tanggal.weekday() == 6 or hari in hari_libur
                     detail = jadwal_map.get((pid, hari))
                     if nonkerja:
-                        cell = tk.Button(self.calendar_frame, text="LIBUR", width=8, state="disabled", disabledforeground="#888888", bg="#F1F3F5", relief="solid", bd=1)
+                        cell = tk.Button(self.calendar_frame, text="LIBUR", width=6, wraplength=68, justify="center", state="disabled", disabledforeground="#888888", bg="#F1F3F5", relief="solid", bd=1)
                     else:
                         kode = detail["kode"] if detail else ""
                         desa = detail["desa"] if detail else ""
                         text = kode + (f"\n{desa}" if desa else "")
-                        cell = tk.Button(self.calendar_frame, text=text, width=10, height=2, bg=self.calendar_colors.get(kode, "#FFFFFF") if detail else "#FFFFFF", relief="solid", bd=1, font=("Segoe UI", 8, "bold") if kode else ("Segoe UI", 8), command=lambda pid=pid, h=hari: self.toggle_jadwal(pid, h))
+                        cell = tk.Button(self.calendar_frame, text=text, width=6, wraplength=68, justify="center", height=2, bg=self.calendar_colors.get(kode, "#FFFFFF") if detail else "#FFFFFF", relief="solid", bd=1, font=("Segoe UI", 8, "bold") if kode else ("Segoe UI", 8), command=lambda pid=pid, h=hari: self.toggle_jadwal(pid, h))
                     if detail:
                         def show_cell_detail(event, n=nama, h=hari, d=detail):
                             warning = self.peringatan_komposisi_tanggal(h)
@@ -4939,17 +4940,26 @@ class App(tk.Tk):
             try:
                 for frame in (names_header, date_header_frame, left_frame, right_frame):
                     frame.update_idletasks()
-                date_width = max(date_header_frame.winfo_reqwidth(), date_header_canvas.winfo_width())
-                body_width = max(right_frame.winfo_reqwidth(), right_canvas.winfo_width())
+                # Header tanggal dan badan jadwal WAJIB memakai rentang piksel
+                # horizontal yang sama. Jika scrollregion dihitung sendiri-sendiri,
+                # xview memakai pecahan berbeda dan kolom akan bergeser saat scroll.
+                day_count = max(1, int(getattr(self, "_activity_calendar_day_count", 31)))
+                shared_content_width = max(day_count * 80, date_header_canvas.winfo_width(), right_canvas.winfo_width())
+                date_header_frame.grid_propagate(True)
+                right_frame.grid_propagate(True)
+                date_header_canvas.itemconfigure(date_header_window, width=shared_content_width)
+                right_canvas.itemconfigure(right_window, width=shared_content_width)
                 left_width = max(left_frame.winfo_reqwidth(), left_canvas.winfo_width())
-                date_header_canvas.itemconfigure(date_header_window, width=date_width)
-                right_canvas.itemconfigure(right_window, width=body_width)
                 left_canvas.itemconfigure(left_window, width=left_width)
-                date_header_canvas.configure(scrollregion=(0, 0, date_width, max(date_header_frame.winfo_reqheight(), 1)))
-                right_canvas.configure(scrollregion=(0, 0, body_width, max(right_frame.winfo_reqheight(), 1)))
+                shared_height_header = max(date_header_frame.winfo_reqheight(), 1)
+                shared_height_body = max(right_frame.winfo_reqheight(), 1)
+                date_header_canvas.configure(scrollregion=(0, 0, shared_content_width, shared_height_header))
+                right_canvas.configure(scrollregion=(0, 0, shared_content_width, shared_height_body))
                 left_canvas.configure(scrollregion=(0, 0, left_width, max(left_frame.winfo_reqheight(), 1)))
-                # Pastikan dua header dan dua panel punya lebar kolom yang sama.
-                date_header_canvas.xview_moveto(right_canvas.xview()[0])
+                # Samakan posisi aktual dalam piksel, bukan sekadar memanggil
+                # xview dengan pecahan dari dua scrollregion yang berbeda.
+                right_fraction = right_canvas.xview()[0]
+                date_header_canvas.xview_moveto(right_fraction)
             except tk.TclError:
                 pass
 
@@ -7895,4 +7905,3 @@ if __name__ == "__main__":
     app = App()
 
     app.mainloop()
-~
