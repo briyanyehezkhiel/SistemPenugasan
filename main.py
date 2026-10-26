@@ -57,7 +57,7 @@ def configure_windows_dpi():
 # =========================================================
 # KONFIGURASI
 # =========================================================
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/briyanyehezkhiel/SistemPenugasan/releases/latest"
 
 BAGIAN = []
