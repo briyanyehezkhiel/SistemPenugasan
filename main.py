@@ -1628,7 +1628,7 @@ class App(tk.Tk):
             command=self.buka_data_pegawai
         )
         self.data_keseluruhan_menu.add_command(
-            label="🏘 Data Desa",
+            label="📍 Data Lokasi",
             command=self.buka_data_desa
         )
         self.data_keseluruhan_menu.add_separator()
@@ -3823,11 +3823,20 @@ class App(tk.Tk):
                         kode = detail["kode"] if detail else ""
                         desa = detail["desa"] if detail else ""
                         text = kode + (f"\n{desa}" if desa else "")
-                        cell = tk.Button(self.calendar_frame, text=text, width=6, height=2, wraplength=64, bg=self.calendar_colors.get(kode, "#FFFFFF") if detail else "#FFFFFF", relief="solid", bd=1, font=("Segoe UI", 8, "bold") if kode else ("Segoe UI", 8), command=lambda pid=pid, h=hari: self.toggle_jadwal(pid, h))
+                        cell = tk.Button(
+                            self.calendar_frame, text=(kode + (f"\n{desa[:10] + ('…' if len(desa) > 10 else '')}" if desa else "")),
+                            width=6, height=2, wraplength=64,
+                            bg=self.calendar_colors.get(kode, "#FFFFFF") if detail else "#FFFFFF",
+                            relief="solid", bd=1,
+                            font=("Segoe UI", 8, "bold") if kode else ("Segoe UI", 8),
+                            command=(lambda pid=pid, h=hari, d=detail: self.popup_detail_penugasan(
+                                pid, h, self._bagian_id_from_kode(d["kode"]), parent=self
+                            ) if d else self.toggle_jadwal(pid, h))
+                        )
                     if detail:
                         def show_cell_detail(event, n=nama, h=hari, d=detail):
                             warning = self.peringatan_komposisi_tanggal(h)
-                            text_detail = f"{n} • Tanggal {h} • {d['kode']} • Desa: {d['desa'] or 'Belum dipilih'}"
+                            text_detail = f"{n} • Tanggal {h} • {d['kode']} • Lokasi: {d['desa'] or 'Belum dipilih'}"
                             if warning:
                                 text_detail += f" • ⚠ {warning}"
                             self.calendar_detail.config(text=text_detail)
@@ -3880,7 +3889,7 @@ class App(tk.Tk):
                     "Penugasan Sudah Ada",
                     f"Pegawai ini sudah memiliki penugasan pada tanggal {hari}:\n"
                     f"{existing[0]} — {existing[1] or ('Kegiatan ' + existing[0])}\n"
-                    f"Desa: {existing[2] or '-'}",
+                    f"Lokasi: {existing[2] or '-'}",
                     parent=self.overall_calendar_window
                 )
                 self.hide_loading()
@@ -3901,7 +3910,7 @@ class App(tk.Tk):
             return
         if not desa_rows:
             self.hide_loading()
-            messagebox.showwarning("Data Desa", "Belum ada desa aktif. Tambahkan desa terlebih dahulu.", parent=self.overall_calendar_window)
+            messagebox.showwarning("Data Lokasi", "Belum ada lokasi aktif. Tambahkan lokasi terlebih dahulu.", parent=self.overall_calendar_window)
             return
 
         # Query selesai; tutup spinner tepat sebelum popup tampil.
@@ -3941,7 +3950,7 @@ class App(tk.Tk):
         kegiatan_combo.grid(row=0, column=1, sticky="ew", padx=(12, 0), pady=7)
         kegiatan_combo.current(0)
 
-        tk.Label(form, text="Desa:").grid(row=1, column=0, sticky="w", pady=7)
+        tk.Label(form, text="Lokasi:").grid(row=1, column=0, sticky="w", pady=7)
         desa_var = tk.StringVar()
         desa_combo = ttk.Combobox(form, textvariable=desa_var, values=[r[1] for r in desa_rows], state="readonly")
         desa_combo.grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=7)
@@ -4126,20 +4135,186 @@ class App(tk.Tk):
         finally:
             conn.close()
 
-    def hapus_penugasan_keseluruhan(self, pegawai_id, hari, bagian_id):
-        """Menghapus penugasan dari Kalender Keseluruhan dengan aturan yang sama.
-        Klik kedua pada sel yang sudah terisi langsung menghapus, tanpa popup.
-        """
-        self.show_loading("Menghapus penugasan dan menyegarkan kalender...")
-        self.update_idletasks()
+    def popup_detail_penugasan(self, pegawai_id, hari, bagian_id, parent=None):
+        """Menampilkan detail penugasan yang dipilih; hapus hanya setelah konfirmasi."""
+        from_overall_calendar = (
+            parent is not None
+            and parent is getattr(self, "overall_calendar_window", None)
+        )
+        parent = parent or getattr(self, "overall_calendar_window", None) or self
+        bulan = NAMA_BULAN.index(self.bulan_var.get())
+        tahun = int(self.tahun_var.get())
         conn = get_connection()
         try:
+            row = conn.execute("""
+                SELECT p.nama, b.kode, COALESCE(b.nama_bagian,''), COALESCE(b.kegiatan,''),
+                       COALESCE(b.lokasi,''), COALESCE(b.dana,0), b.penanggung_jawab_id,
+                       COALESCE(d.nama,'')
+                FROM jadwal j
+                JOIN pegawai p ON p.id=j.pegawai_id
+                JOIN bagian b ON b.id=j.bagian_id
+                LEFT JOIN desa d ON d.id=j.desa_id
+                WHERE j.periode_id=? AND j.pegawai_id=? AND j.hari=? AND j.bagian_id=?
+            """, (self.periode_id, pegawai_id, hari, bagian_id)).fetchone()
+            if not row:
+                messagebox.showinfo("Penugasan", "Penugasan ini sudah tidak tersedia.", parent=parent)
+                return
+            nama_pegawai, kode, nama_bagian, kegiatan, lokasi, dana, pj_id, desa = row
+            pj_row = conn.execute("SELECT nama FROM pegawai WHERE id=?", (pj_id,)).fetchone() if pj_id else None
+            pj_nama = pj_row[0] if pj_row else "Belum ditentukan"
+            anggota = conn.execute("""
+                SELECT p.nama FROM jadwal j JOIN pegawai p ON p.id=j.pegawai_id
+                WHERE j.periode_id=? AND j.bagian_id=? AND j.hari=? ORDER BY p.nama
+            """, (self.periode_id, bagian_id, hari)).fetchall()
+            anggota_text = "\n".join(f"• {x[0]}" for x in anggota) or "Belum ada pegawai"
+        finally:
+            conn.close()
+
+        win = tk.Toplevel(parent)
+        self.enable_native_window_controls(win)
+        win.title("Detail Penugasan")
+        win.transient(parent)
+        win.configure(bg=UI_BG)
+        win.resizable(True, True)
+        tk.Label(win, text=f"Detail Penugasan — {kode}", bg=UI_BG, fg=UI_TEXT,
+                 font=("Segoe UI", 15, "bold")).pack(anchor="w", padx=22, pady=(18, 8))
+        body = tk.Frame(win, bg="white", padx=18, pady=14, highlightthickness=1, highlightbackground="#D7DEE8")
+        body.pack(fill="both", expand=True, padx=18, pady=4)
+        fields = [
+            ("Tanggal", f"{hari} {NAMA_BULAN[bulan]} {tahun}"),
+            ("Pegawai", nama_pegawai or "Tanpa Nama"),
+            ("Kode kegiatan", kode),
+            ("Nama kegiatan", nama_bagian.strip() or f"Kegiatan {kode}"),
+            ("Deskripsi", kegiatan.strip() or "-"),
+            ("Lokasi", lokasi.strip() or desa.strip() or "Belum ditentukan"),
+            ("Penanggung jawab", pj_nama or "Belum ditentukan"),
+            ("Dana kegiatan", rupiah(int(dana or 0))),
+            ("Pegawai pada tanggal ini", anggota_text),
+        ]
+        for label, value in fields:
+            line = tk.Frame(body, bg="white")
+            line.pack(fill="x", anchor="w", pady=2)
+            tk.Label(line, text=f"{label}:", width=21, anchor="nw", bg="white", fg=UI_MUTED,
+                     font=("Segoe UI", 9, "bold")).pack(side="left")
+            tk.Label(line, text=str(value), anchor="nw", justify="left", wraplength=460,
+                     bg="white", fg=UI_TEXT, font=("Segoe UI", 9)).pack(side="left", fill="x", expand=True)
+
+        bottom = tk.Frame(win, bg=UI_BG)
+        bottom.pack(fill="x", padx=18, pady=(8, 16))
+        def delete_assignment():
+            if not messagebox.askyesno(
+                "Konfirmasi Hapus", 
+                f"Hapus penugasan {nama_pegawai} pada tanggal {hari}?\n\n"
+                "Penugasan pegawai lain pada kegiatan ini tidak akan dihapus.", parent=win
+            ):
+                return
+            win.destroy()
+            self.hapus_penugasan_keseluruhan(
+                pegawai_id, hari, bagian_id,
+                from_overall_calendar=from_overall_calendar
+            )
+        ttk.Button(bottom, text="Tutup", command=win.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(bottom, text="Hapus Penugasan Ini", command=delete_assignment).pack(side="right")
+        self.fit_popup(win, parent, min_width=560, min_height=430, max_width=760, max_height=760)
+
+    def hapus_penugasan_keseluruhan(
+        self, pegawai_id, hari, bagian_id, from_overall_calendar=False
+    ):
+        """Hapus penugasan; aturan pindah kegiatan hanya berlaku di Kalender Kegiatan."""
+        # Kalender Keseluruhan boleh menghapus penugasan kegiatan mana pun.
+        # Dari Kalender Kegiatan, pengguna wajib berada di kegiatan pemilik jadwal.
+        bagian_aktif_id = getattr(self, "bagian_id", None)
+        if (
+            not from_overall_calendar
+            and (bagian_aktif_id is None or int(bagian_aktif_id) != int(bagian_id))
+        ):
+            conn_info = None
+            try:
+                conn_info = get_connection()
+                target = conn_info.execute(
+                    "SELECT kode, COALESCE(nama_bagian, '') FROM bagian WHERE id=?",
+                    (bagian_id,)
+                ).fetchone()
+            finally:
+                if conn_info:
+                    conn_info.close()
+
+            kode_target = target[0] if target else "?"
+            nama_target = ((target[1] if target else "") or "").strip() or f"Kegiatan {kode_target}"
+            dialog = tk.Toplevel(self)
+            dialog.title("Buka Kegiatan yang Tepat")
+            dialog.transient(self)
+            dialog.resizable(False, False)
+            dialog.configure(bg=UI_BG)
+
+            card = tk.Frame(dialog, bg="white", padx=22, pady=18)
+            card.pack(fill="both", expand=True)
+            tk.Label(
+                card, text="Buka kegiatan yang sesuai dulu",
+                bg="white", fg=UI_TEXT, font=("Segoe UI", 13, "bold"), anchor="w"
+            ).pack(fill="x", pady=(0, 8))
+            tk.Label(
+                card,
+                text="Penugasan ini milik kegiatan lain. Pilih kegiatan tersebut terlebih dahulu "
+                     "agar penugasan tidak terhapus dari tab yang salah.",
+                bg="white", fg=UI_MUTED, font=("Segoe UI", 10),
+                justify="left", wraplength=410, anchor="w"
+            ).pack(fill="x", pady=(0, 14))
+            target_box = tk.Frame(card, bg="#E5F4F1", padx=12, pady=10)
+            target_box.pack(fill="x", pady=(0, 16))
+            tk.Label(
+                target_box, text="KEGIATAN YANG DITUJU",
+                bg="#E5F4F1", fg="#47716D", font=("Segoe UI", 9, "bold"), anchor="w"
+            ).pack(fill="x")
+            tk.Label(
+                target_box, text=f"{nama_target} ({kode_target})",
+                bg="#E5F4F1", fg="#145B55", font=("Segoe UI", 12, "bold"),
+                anchor="w", wraplength=410, justify="left"
+            ).pack(fill="x", pady=(3, 0))
+            actions = tk.Frame(card, bg="white")
+            actions.pack(fill="x")
+
+            def buka_kegiatan():
+                dialog.destroy()
+                try:
+                    self.change_bagian(kode_target)
+                    self.notebook.select(self.tab_jadwal)
+                except Exception as exc:
+                    messagebox.showerror(
+                        "Tidak Bisa Membuka Kegiatan",
+                        f"Tidak berhasil membuka {nama_target}. Pilih kegiatan tersebut "
+                        "dari daftar kegiatan di bagian atas.\\n\\n" + str(exc),
+                        parent=self
+                    )
+
+            ttk.Button(actions, text="Nanti Saja", command=dialog.destroy).pack(side="right", padx=(8, 0))
+            ttk.Button(actions, text=f"Buka {nama_target}", command=buka_kegiatan).pack(side="right")
+            dialog.update_idletasks()
+            width, height = max(470, dialog.winfo_reqwidth()), dialog.winfo_reqheight()
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - width) // 2)
+            y = self.winfo_rooty() + max(0, (self.winfo_height() - height) // 2)
+            dialog.geometry(f"{width}x{height}+{x}+{y}")
+            dialog.grab_set()
+            dialog.focus_force()
+            return
+
+        # Only show loading after any required activity-tab validation has passed.
+        self.show_loading("Menghapus penugasan dan menyegarkan kalender...")
+        self.update_idletasks()
+        conn = None
+        berhasil_dihapus = False
+        try:
+            conn = get_connection()
             row = conn.execute(
                 "SELECT id, bagian_id FROM jadwal WHERE periode_id=? AND pegawai_id=? AND hari=?",
                 (self.periode_id, pegawai_id, hari)
             ).fetchone()
             if not row or int(row[1]) != int(bagian_id):
-                self.hide_loading()
+                messagebox.showwarning(
+                    "Jadwal Berubah",
+                    "Penugasan ini sudah berubah atau tidak ditemukan. Kalender akan diperbarui.",
+                    parent=getattr(self, "overall_calendar_window", self)
+                )
                 return
 
             pj_row = conn.execute(
@@ -4149,27 +4324,43 @@ class App(tk.Tk):
             pj_id = pj_row[0] if pj_row else None
             if pj_id and int(pegawai_id) == int(pj_id):
                 non_pj_count = conn.execute(
-                    "SELECT COUNT(*) FROM jadwal WHERE periode_id=? AND bagian_id=? AND hari=? AND pegawai_id<>?",
+                    "SELECT COUNT(DISTINCT pegawai_id) FROM jadwal "
+                    "WHERE periode_id=? AND bagian_id=? AND hari=? AND pegawai_id<>?",
                     (self.periode_id, bagian_id, hari, pj_id)
                 ).fetchone()[0]
                 if non_pj_count > 0:
                     messagebox.showinfo(
                         "Penanggung Jawab",
-                        "PJ otomatis mengikuti tanggal kegiatan dan tidak dapat dilepas selama masih ada pegawai lain pada tanggal tersebut.",
-                        parent=self.overall_calendar_window
+                        "Masih ada pegawai lain yang bertugas pada kegiatan ini di tanggal tersebut. "
+                        "Hapus penugasan pegawai lain terlebih dahulu; jika PJ menjadi satu-satunya "
+                        "yang tersisa, penugasannya bisa dihapus.",
+                        parent=getattr(self, "overall_calendar_window", self)
                     )
-                    self.hide_loading()
                     return
 
             conn.execute("DELETE FROM jadwal WHERE id=?", (row[0],))
             conn.commit()
+            berhasil_dihapus = True
+        except Exception as exc:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            messagebox.showerror(
+                "Gagal Menghapus",
+                f"Penugasan tidak berhasil dihapus. Silakan coba lagi.\\n\\nDetail: {exc}",
+                parent=getattr(self, "overall_calendar_window", self)
+            )
         finally:
-            conn.close()
+            if conn:
+                conn.close()
+            self.hide_loading()
 
-        self.hide_loading()
-        self.refresh_after_schedule(
-            "Menghapus penugasan dan menyegarkan semua kalender..."
-        )
+        if berhasil_dihapus:
+            self.refresh_after_schedule(
+                "Menghapus penugasan dan menyegarkan semua kalender..."
+            )
 
     def load_kalender_keseluruhan(self):
         """Kalender dashboard bulanan: semua pegawai dan semua kegiatan, bersifat baca-saja."""
@@ -4327,19 +4518,22 @@ class App(tk.Tk):
                     )
 
                 if detail:
-                    desa = detail.get("desa") or "Desa belum ditentukan"
-                    cell.configure(text=f"{kode}\n{desa}", justify="center", font=("Segoe UI", 7, "bold"))
-                    detail_text = f"{nama} • Tanggal {hari} • {kode} — {detail['nama']} • Desa: {desa}"
+                    desa = detail.get("desa") or "Lokasi belum ditentukan"
+                    desa_ringkas = desa if len(desa) <= 10 else desa[:9] + "…"
+                    cell.configure(text=f"{kode}\n{desa_ringkas}", justify="center", font=("Segoe UI", 7, "bold"))
+                    detail_text = f"{nama} • Tanggal {hari} • {kode} — {detail['nama']} • Lokasi: {desa}"
                     if detail.get("deskripsi"):
                         detail_text += f" • {detail['deskripsi']}"
-                    detail_text += " • Klik untuk menghapus penugasan"
+                    detail_text += " • Klik untuk melihat detail"
                     cell.bind(
                         "<Enter>",
                         lambda event, txt=detail_text: self.overall_calendar_detail.config(text=txt)
                     )
                     cell.bind(
                         "<Button-1>",
-                        lambda event, pid=pegawai_id, h=hari, bid=detail["bagian_id"]: self.hapus_penugasan_keseluruhan(pid, h, bid)
+                        lambda event, pid=pegawai_id, h=hari, bid=detail["bagian_id"]: self.popup_detail_penugasan(
+                            pid, h, bid, parent=self.overall_calendar_window
+                        )
                     )
                     cell.configure(cursor="hand2")
                 else:
@@ -4569,23 +4763,23 @@ class App(tk.Tk):
         desa = load_desa_aktif()
         if not desa:
             messagebox.showwarning(
-                "Data Desa Kosong",
-                "Belum ada desa aktif di database. Tambahkan desa terlebih dahulu pada menu Data Keseluruhan → Data Desa.",
+                "Data Lokasi Kosong",
+                "Belum ada lokasi aktif di database. Tambahkan lokasi terlebih dahulu pada menu Data Keseluruhan → Data Lokasi.",
                 parent=self
             )
             return None
 
         win = tk.Toplevel(self)
         self.enable_native_window_controls(win)
-        win.title(f"Pilih Desa — Tanggal {hari}")
+        win.title(f"Pilih Lokasi — Tanggal {hari}")
         win.geometry("460x210")
         win.transient(self)
         self.enable_native_window_controls(win)
         win.grab_set()
         self.enable_native_window_controls(win)
         self.center_window(win, self)
-        tk.Label(win, text=f"Desa untuk penugasan tanggal {hari}", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=20, pady=(18, 8))
-        tk.Label(win, text="Setiap tanggal kegiatan wajib memiliki satu desa.", fg=UI_MUTED).pack(anchor="w", padx=20, pady=(0, 10))
+        tk.Label(win, text=f"Lokasi untuk penugasan tanggal {hari}", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=20, pady=(18, 8))
+        tk.Label(win, text="Setiap tanggal kegiatan wajib memiliki satu lokasi.", fg=UI_MUTED).pack(anchor="w", padx=20, pady=(0, 10))
         var = tk.StringVar()
         values = [x[1] for x in desa]
         combo = ttk.Combobox(win, textvariable=var, values=values, state="readonly", width=42)
@@ -4601,7 +4795,7 @@ class App(tk.Tk):
             pilihan = var.get().strip()
             row = next((x for x in desa if x[1] == pilihan), None)
             if not row:
-                messagebox.showwarning("Desa", "Pilih desa terlebih dahulu.", parent=win)
+                messagebox.showwarning("Lokasi", "Pilih lokasi terlebih dahulu.", parent=win)
                 return
             result["id"] = row[0]
             win.destroy()
@@ -4806,7 +5000,7 @@ class App(tk.Tk):
             desa_frame, columns=desa_cols, show="headings", height=6
         )
         self.table_desa_kegiatan.heading("no", text="No.")
-        self.table_desa_kegiatan.heading("desa", text="Desa")
+        self.table_desa_kegiatan.heading("desa", text="Lokasi")
         self.table_desa_kegiatan.heading("turun", text="Dipakai")
         self.table_desa_kegiatan.heading("tanggal", text="Tanggal")
         self.table_desa_kegiatan.heading("kegiatan", text="Kegiatan")
@@ -6880,7 +7074,7 @@ class App(tk.Tk):
                 if dt.weekday()==6 or hari in hari_libur:
                     c.value="LIBUR"; c.fill=holiday_fill
                 elif detail:
-                    c.value=f"{detail['kode']} - {detail['nama']}\nDesa: {detail['desa'] or 'Desa belum ditentukan'}"; c.fill=fills.get(detail['kode'],PatternFill("solid",fgColor="FFFFFF"))
+                    c.value=f"{detail['kode']} - {detail['nama']}\nLokasi: {detail['desa'] or 'Lokasi belum ditentukan'}"; c.fill=fills.get(detail['kode'],PatternFill("solid",fgColor="FFFFFF"))
                 c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True); c.border=border
             ws.cell(ri,1).border=border; ws.cell(ri,1).alignment=Alignment(vertical="center",wrap_text=True)
 
@@ -6899,7 +7093,7 @@ class App(tk.Tk):
         ws.sheet_view.zoomScale = 75
         headers = [
             "Nama", "NIP", "Pangkat", "Golongan", "Golongan Utama", "Jabatan",
-            "Tarif", "Status", "Turun Bulan Ini", "Total Uang Bulan Ini", "Kegiatan", "Tanggal", "Desa"
+            "Tarif", "Status", "Turun Bulan Ini", "Total Uang Bulan Ini", "Kegiatan", "Tanggal", "Lokasi"
         ]
         ws.append(headers)
 
@@ -6950,9 +7144,9 @@ class App(tk.Tk):
 
     def _export_data_desa_sheet(self, wb, conn, bulan, tahun, periode_id):
         """Export master desa + penggunaan desa pada periode aktif."""
-        ws = wb.create_sheet("Data Desa")
+        ws = wb.create_sheet("Data Lokasi")
         ws.sheet_view.zoomScale = 80
-        headers = ["Nama Desa", "Status", "Dipakai Bulan Ini", "Tanggal", "Kegiatan", "Pegawai"]
+        headers = ["Nama Lokasi", "Status", "Dipakai Bulan Ini", "Tanggal", "Kegiatan", "Pegawai"]
         ws.append(headers)
         rows = conn.execute(
             """
@@ -7054,7 +7248,7 @@ class App(tk.Tk):
         ).fetchall()
 
         header_data = max(13, 5 + len(summary["details"]))
-        headers = ["No", "Nama", "NIP", "Pangkat", "Golongan", "Golongan Utama", "Jabatan", "Tarif", "PJ", "Turun", "Total Uang", "Tanggal", "Desa"]
+        headers = ["No", "Nama", "NIP", "Pangkat", "Golongan", "Golongan Utama", "Jabatan", "Tarif", "PJ", "Turun", "Total Uang", "Tanggal", "Lokasi"]
         for c, h in enumerate(headers, start=1):
             ws.cell(header_data, c, h)
         self._format_excel_sheet(
@@ -7163,7 +7357,7 @@ class App(tk.Tk):
                     c.value = "LIBUR"
                     c.fill = holiday_fill
                 elif desa is not None:
-                    c.value = f"{kode}\nDesa: {desa or 'Belum ditentukan'}"
+                    c.value = f"{kode}\nLokasi: {desa or 'Belum ditentukan'}"
                     c.fill = fill
                 else:
                     c.value = ""
@@ -7213,7 +7407,7 @@ class App(tk.Tk):
                 conn.close()
             wb.save(path); wb.close()
             jumlah_sheet=3+len(bagian_rows)
-            messagebox.showinfo("Export Berhasil",f"File penugasan berhasil dibuat.\n\n{path}\n\nIsi: Kalender Keseluruhan + Data Pegawai + Data Desa + satu sheet per kegiatan dengan Data Kegiatan + Kalender Kegiatan ({jumlah_sheet} sheet).",parent=self)
+            messagebox.showinfo("Export Berhasil",f"File penugasan berhasil dibuat.\n\n{path}\n\nIsi: Kalender Keseluruhan + Data Pegawai + Data Lokasi + satu sheet per kegiatan dengan Data Kegiatan + Kalender Kegiatan ({jumlah_sheet} sheet).",parent=self)
         except Exception as exc:
             try: wb.close()
             except Exception: pass
@@ -7237,8 +7431,8 @@ class App(tk.Tk):
 
         win = tk.Toplevel(self)
         self.data_desa_window = win
-        self.modernize_window(win, "Data Desa", (760, 500))
-        win.title("Data Desa")
+        self.modernize_window(win, "Data Lokasi", (760, 500))
+        win.title("Data Lokasi")
         # Toplevel ikut menyesuaikan ukuran monitor/DPI dan tetap bisa di-resize.
         sw = max(900, int(win.winfo_screenwidth() * 0.78))
         sh = max(560, int(win.winfo_screenheight() * 0.78))
@@ -7249,7 +7443,7 @@ class App(tk.Tk):
         self.center_window(win, self)
 
         tk.Label(
-            win, text="DATA DESA", bg=UI_BG,
+            win, text="DATA LOKASI", bg=UI_BG,
             font=("Segoe UI", 17, "bold")
         ).pack(anchor="w", padx=20, pady=(15, 5))
 
@@ -7261,7 +7455,7 @@ class App(tk.Tk):
 
         toolbar = tk.Frame(win, bg=UI_BG)
         toolbar.pack(fill="x", padx=20, pady=(12, 5))
-        ttk.Button(toolbar, text="＋ Tambah Desa", command=self.tambah_desa).pack(side="left", padx=(0, 6))
+        ttk.Button(toolbar, text="＋ Tambah Lokasi", command=self.tambah_desa).pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="✎ Edit", command=self.edit_desa_terpilih).pack(side="left", padx=6)
         ttk.Button(toolbar, text="🗑 Nonaktifkan", command=self.nonaktifkan_desa_terpilih).pack(side="left", padx=6)
         ttk.Button(toolbar, text="🗑 Hapus Permanen", command=self.hapus_desa_permanen_terpilih).pack(side="left", padx=6)
@@ -7271,14 +7465,14 @@ class App(tk.Tk):
 
         self.tampilkan_nonaktif_desa_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            toolbar, text="Tampilkan desa nonaktif",
+            toolbar, text="Tampilkan lokasi nonaktif",
             variable=self.tampilkan_nonaktif_desa_var,
             command=self.refresh_data_desa
         ).pack(side="right", padx=(10, 0))
 
         search = tk.Frame(win, bg=UI_BG)
         search.pack(fill="x", padx=20, pady=(5, 5))
-        tk.Label(search, text="Cari Desa:", bg=UI_BG, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 8))
+        tk.Label(search, text="Cari Lokasi:", bg=UI_BG, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 8))
         self.search_data_desa_var = tk.StringVar()
         ent = ttk.Entry(search, textvariable=self.search_data_desa_var, width=45)
         ent.pack(side="left")
@@ -7290,7 +7484,7 @@ class App(tk.Tk):
         columns = ("no", "nama", "status", "turun", "tanggal", "kegiatan")
         self.table_desa = ttk.Treeview(frame, columns=columns, show="headings", selectmode="browse")
         self.table_desa.heading("no", text="No.")
-        self.table_desa.heading("nama", text="Nama Desa")
+        self.table_desa.heading("nama", text="Nama Lokasi")
         self.table_desa.heading("status", text="Status")
         self.table_desa.heading("turun", text="Dipakai Bulan Ini")
         self.table_desa.heading("tanggal", text="Tanggal")
@@ -7442,7 +7636,7 @@ class App(tk.Tk):
 
     def tambah_desa(self):
         parent = getattr(self, "data_desa_window", self)
-        nama = simpledialog.askstring("Tambah Desa", "Nama desa:", parent=parent)
+        nama = simpledialog.askstring("Tambah Lokasi", "Nama lokasi:", parent=parent)
         if not nama or not nama.strip():
             return
         nama = nama.strip()
@@ -7451,7 +7645,7 @@ class App(tk.Tk):
             conn.execute("INSERT INTO desa(nama, aktif) VALUES(?, 1)", (nama,))
             conn.commit()
         except sqlite3.IntegrityError:
-            messagebox.showwarning("Data Desa", "Nama desa sudah ada.", parent=parent)
+            messagebox.showwarning("Data Lokasi", "Nama lokasi sudah ada.", parent=parent)
             return
         finally:
             conn.close()
@@ -7461,7 +7655,7 @@ class App(tk.Tk):
         parent = getattr(self, "data_desa_window", self)
         desa_id = self._desa_terpilih()
         if not desa_id:
-            messagebox.showwarning("Data Desa", "Pilih desa terlebih dahulu.", parent=parent)
+            messagebox.showwarning("Data Lokasi", "Pilih lokasi terlebih dahulu.", parent=parent)
             return
         conn = get_connection()
         row = conn.execute("SELECT nama FROM desa WHERE id=?", (desa_id,)).fetchone()
@@ -7469,7 +7663,7 @@ class App(tk.Tk):
         if not row:
             return
         nama_lama = row[0]
-        nama = simpledialog.askstring("Edit Desa", "Nama desa:", initialvalue=nama_lama, parent=parent)
+        nama = simpledialog.askstring("Edit Lokasi", "Nama lokasi:", initialvalue=nama_lama, parent=parent)
         if nama is None or not nama.strip():
             return
         conn = get_connection()
@@ -7477,7 +7671,7 @@ class App(tk.Tk):
             conn.execute("UPDATE desa SET nama=? WHERE id=?", (nama.strip(), desa_id))
             conn.commit()
         except sqlite3.IntegrityError:
-            messagebox.showwarning("Data Desa", "Nama desa sudah digunakan oleh desa lain.", parent=parent)
+            messagebox.showwarning("Data Lokasi", "Nama lokasi sudah digunakan oleh lokasi lain.", parent=parent)
             return
         finally:
             conn.close()
@@ -7487,9 +7681,9 @@ class App(tk.Tk):
         parent = getattr(self, "data_desa_window", self)
         desa_id = self._desa_terpilih()
         if not desa_id:
-            messagebox.showwarning("Data Desa", "Pilih desa terlebih dahulu.", parent=parent)
+            messagebox.showwarning("Data Lokasi", "Pilih lokasi terlebih dahulu.", parent=parent)
             return
-        if not messagebox.askyesno("Nonaktifkan Desa", "Nonaktifkan desa terpilih? Desa tidak akan muncul sebagai pilihan baru pada kalender.", parent=parent):
+        if not messagebox.askyesno("Nonaktifkan Lokasi", "Nonaktifkan desa terpilih? Desa tidak akan muncul sebagai pilihan baru pada kalender.", parent=parent):
             return
         conn = get_connection()
         conn.execute("UPDATE desa SET aktif=0 WHERE id=?", (desa_id,))
@@ -7500,7 +7694,7 @@ class App(tk.Tk):
         parent = getattr(self, "data_desa_window", self)
         desa_id = self._desa_terpilih()
         if not desa_id:
-            messagebox.showwarning("Data Desa", "Pilih desa terlebih dahulu.", parent=parent)
+            messagebox.showwarning("Data Lokasi", "Pilih lokasi terlebih dahulu.", parent=parent)
             return
         conn = get_connection()
         conn.execute("UPDATE desa SET aktif=1 WHERE id=?", (desa_id,))
@@ -7511,7 +7705,7 @@ class App(tk.Tk):
         parent = getattr(self, "data_desa_window", self)
         desa_id = self._desa_terpilih()
         if not desa_id:
-            messagebox.showwarning("Data Desa", "Pilih desa terlebih dahulu.", parent=parent)
+            messagebox.showwarning("Data Lokasi", "Pilih lokasi terlebih dahulu.", parent=parent)
             return
         conn = get_connection()
         row = conn.execute("SELECT nama FROM desa WHERE id=?", (desa_id,)).fetchone()
@@ -7528,7 +7722,7 @@ class App(tk.Tk):
             )
             return
         if not messagebox.askyesno(
-            "Hapus Permanen Desa",
+            "Hapus Permanen Lokasi",
             f"Hapus permanen desa '{nama}'?\n\nData yang sudah dihapus tidak dapat dipulihkan dari aplikasi.",
             parent=parent
         ):
