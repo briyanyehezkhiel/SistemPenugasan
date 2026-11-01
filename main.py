@@ -890,7 +890,7 @@ class App(tk.Tk):
                     manifest = json.loads(response.read().decode("utf-8"))
 
                 latest = str(manifest.get("version", "")).strip().lstrip("vV")
-                if not latest or not re.fullmatch(r"\\d+(?:\\.\\d+)*", latest):
+                if not latest or not re.fullmatch(r"\d+(?:\.\d+)*", latest):
                     raise ValueError("Format versi pada update.json tidak valid.")
 
                 current_parts = self._version_parts(APP_VERSION)
@@ -930,7 +930,7 @@ class App(tk.Tk):
     @staticmethod
     def _version_parts(version):
         try:
-            return tuple(int(part) for part in re.findall(r"\\d+", version))
+            return tuple(int(part) for part in re.findall(r"\d+", version))
         except Exception:
             return (0,)
 
