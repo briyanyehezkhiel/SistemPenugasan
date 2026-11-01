@@ -107,6 +107,27 @@ UI_TABLE_HEAD = "#F8FAFC"
 UI_TABLE_ALT = "#F8FAFC"
 UI_SHADOW = "#E5E7EB"
 
+# Palet tema aplikasi (nilai netral saja yang berubah; warna status kalender
+# dan warna kegiatan dipertahankan agar makna visualnya tidak berubah).
+THEME_PALETTES = {
+    "light": {
+        "UI_BG": "#F1F5F9", "UI_PANEL": "#FFFFFF", "UI_BORDER": "#CBD5E1",
+        "UI_TEXT": "#172033", "UI_MUTED": "#526176",
+        "UI_PRIMARY": "#0F766E", "UI_PRIMARY_HOVER": "#0B5F59",
+        "UI_PRIMARY_LIGHT": "#CCFBF1", "UI_SUCCESS_LIGHT": "#DCFCE7",
+        "UI_DANGER_LIGHT": "#FEE2E2", "UI_TABLE_HEAD": "#E8EEF5",
+        "UI_TABLE_ALT": "#F3F6FA", "UI_SHADOW": "#D7E0EA",
+    },
+    "dark": {
+        "UI_BG": "#0B1220", "UI_PANEL": "#172235", "UI_BORDER": "#34445B",
+        "UI_TEXT": "#E8EEF7", "UI_MUTED": "#B0BED0",
+        "UI_PRIMARY": "#2DD4BF", "UI_PRIMARY_HOVER": "#14B8A6",
+        "UI_PRIMARY_LIGHT": "#164E4A", "UI_SUCCESS_LIGHT": "#153D32",
+        "UI_DANGER_LIGHT": "#4A2630", "UI_TABLE_HEAD": "#26364D",
+        "UI_TABLE_ALT": "#1D2B40", "UI_SHADOW": "#070D17",
+    },
+}
+
 
 # =========================================================
 # HELPER
@@ -867,6 +888,7 @@ class App(tk.Tk):
 
         self.bagian_id = None
 
+        self.current_theme = "light"
         self.build_style()
         self.build_header()
         self.build_main()
@@ -952,11 +974,27 @@ class App(tk.Tk):
         progress.title("Pembaruan aplikasi")
         progress.transient(self)
         progress.resizable(False, False)
-        ttk.Label(progress, text=f"Mengunduh installer versi {latest}...").pack(padx=24, pady=(20, 10))
-        bar = ttk.Progressbar(progress, mode="indeterminate", length=300)
-        bar.pack(padx=24, pady=8)
+        progress.configure(bg=UI_BG)
+        card = tk.Frame(
+            progress, bg=UI_PANEL, padx=30, pady=24,
+            highlightthickness=1, highlightbackground=UI_BORDER
+        )
+        card.pack(padx=18, pady=18, fill="both", expand=True)
+        tk.Label(
+            card, text="Memperbarui aplikasi", bg=UI_PANEL, fg=UI_TEXT,
+            font=("Segoe UI", 13, "bold")
+        ).pack(pady=(0, 7))
+        tk.Label(
+            card, text=f"Mengunduh installer versi {latest}...",
+            bg=UI_PANEL, fg=UI_MUTED, font=("Segoe UI", 9)
+        ).pack(pady=(0, 12))
+        bar = ttk.Progressbar(card, mode="indeterminate", length=300)
+        bar.pack(pady=6)
         bar.start(10)
-        ttk.Label(progress, text="Mohon tunggu dan jangan matikan aplikasi.").pack(padx=24, pady=(4, 20))
+        tk.Label(
+            card, text="Mohon tunggu dan jangan matikan aplikasi.",
+            bg=UI_PANEL, fg=UI_MUTED, font=("Segoe UI", 9)
+        ).pack(pady=(10, 0))
         self.center_window(progress, self)
 
         def worker():
@@ -1266,7 +1304,7 @@ class App(tk.Tk):
             if row:
                 tags = tuple(t for t in tree.item(row, "tags") if t not in ("hover_row",))
                 tree.item(row, tags=tags + ("hover_row",))
-                tree.tag_configure("hover_row", background="#F0FDFA")
+                tree.tag_configure("hover_row", background=THEME_PALETTES[getattr(self, "current_theme", "light")]["UI_PRIMARY_LIGHT"])
                 self._hover_tree_item = row
                 self._hover_tree = tree
             else:
@@ -1284,6 +1322,26 @@ class App(tk.Tk):
 
         try:
             style.theme_use("clam")
+        except Exception:
+            pass
+
+        # Notebook hanya menjadi pengelola halaman; navigasi visual memakai dropdown.
+        try:
+            style.layout("Hidden.TNotebook", [("Notebook.client", {"sticky": "nswe"})])
+            style.layout("Hidden.TNotebook.Tab", [])
+        except Exception:
+            pass
+
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        # Halaman utama kembali memakai tab di posisi atas seperti tata letak awal.
+        # Sidebar hanya untuk administrasi; Notebook tetap menjadi navigasi utama.
+        try:
+            style.layout("Sidebar.TNotebook", style.layout("TNotebook"))
+            style.layout("Sidebar.TNotebook.Tab", style.layout("TNotebook.Tab"))
         except Exception:
             pass
 
@@ -1306,7 +1364,7 @@ class App(tk.Tk):
         )
         style.map(
             "TButton",
-            background=[("pressed", "#E8EEF6"), ("active", "#F1F5F9")],
+            background=[("pressed", UI_PRIMARY_LIGHT), ("active", UI_TABLE_HEAD)],
             foreground=[("disabled", "#98A2B3"), ("!disabled", UI_TEXT)]
         )
 
@@ -1331,7 +1389,7 @@ class App(tk.Tk):
         )
         style.map(
             "Danger.TButton",
-            background=[("active", "#FBDADA"), ("pressed", "#F8CACA")]
+            background=[("active", UI_DANGER_LIGHT), ("pressed", UI_DANGER_LIGHT)]
         )
 
         # Inputs
@@ -1376,16 +1434,17 @@ class App(tk.Tk):
         )
         style.configure(
             "TNotebook.Tab",
-            background="#F1F3F5",
+            background=UI_TABLE_HEAD,
             foreground=UI_MUTED,
-            padding=(20, 10),
+            padding=(24, 13),
             font=("Segoe UI", 10, "bold"),
             borderwidth=0
         )
         style.map(
             "TNotebook.Tab",
-            background=[("selected", UI_PANEL), ("active", "#F3F6FA")],
-            foreground=[("selected", UI_PRIMARY), ("active", UI_TEXT)]
+            background=[("selected", UI_PRIMARY), ("active", UI_TABLE_ALT)],
+            foreground=[("selected", "#FFFFFF"), ("active", UI_TEXT)],
+            padding=[("selected", (26, 14)), ("!selected", (22, 12))]
         )
 
         # Menubutton
@@ -1430,7 +1489,7 @@ class App(tk.Tk):
             "Treeview.Heading",
             font=("Segoe UI", 10, "bold"),
             background=UI_TABLE_HEAD,
-            foreground="#344054",
+            foreground=UI_TEXT,
             padding=(10, 8),
             borderwidth=0,
             relief="flat"
@@ -1507,44 +1566,10 @@ class App(tk.Tk):
     # =====================================================
 
     def build_header(self):
-        header = tk.Frame(self, bg=UI_HEADER, height=68)
-        header.pack(fill="x")
-        header.pack_propagate(False)
-
-        left = tk.Frame(header, bg=UI_HEADER)
-        left.pack(side="left", fill="y", padx=24)
-
-        tk.Label(
-            left,
-            text="Sistem Penugasan Pegawai",
-            bg=UI_HEADER,
-            fg=UI_WHITE,
-            font=("Segoe UI Semibold", 17)
-        ).pack(anchor="w", pady=(9, 0))
-
-        self.header_period = tk.Label(
-            left,
-            text="",
-            bg=UI_HEADER,
-            fg="#D1D5DB",
-            font=("Segoe UI", 9)
-        )
-        self.header_period.pack(anchor="w", pady=(1, 0))
-
-        self.update_check_button = tk.Button(
-            header,
-            text="Periksa Update",
-            command=lambda: self.check_for_updates(manual=True),
-            bg="#FFFFFF",
-            fg=UI_TEXT,
-            activebackground="#E5E7EB",
-            relief="flat",
-            padx=14,
-            pady=7,
-            font=("Segoe UI", 9, "bold"),
-            cursor="hand2"
-        )
-        self.update_check_button.pack(side="right", padx=20, pady=16)
+        # Judul aplikasi sekarang menyatu dengan navbar utama.
+        # Tidak lagi membuat header terpisah yang memakan tinggi layar.
+        self.header_period = tk.Label(self, text="")
+        self.header_period.place_forget()
 
     # =====================================================
     # MAIN
@@ -1565,202 +1590,118 @@ class App(tk.Tk):
 
     def build_main(self):
 
-        # PERIODE
-        periode_frame = tk.Frame(
-            self,
-            bg=UI_PANEL,
-            highlightbackground=UI_BORDER,
-            highlightthickness=1,
-            padx=10,
-            pady=7
-        )
+        # Kerangka aplikasi dengan navbar horizontal di bagian atas.
+        self.main_shell = tk.Frame(self, bg=UI_BG)
+        self.main_shell.pack(fill="both", expand=True)
 
-        periode_frame.pack(
-            fill="x",
-            padx=15,
-            pady=10
+        self.sidebar_expanded_width = 232
+        self.sidebar_collapsed_width = 68
+        self._sidebar_expanded = True
+        self.sidebar = tk.Frame(
+            self.main_shell, bg=UI_PANEL, height=58,
+            highlightthickness=1, highlightbackground=UI_BORDER, bd=0
         )
+        self.sidebar.pack(side="top", fill="x")
+        self.sidebar.pack_propagate(False)
 
-        tk.Label(
-            periode_frame,
-            text="Periode:",
-            bg=UI_BG,
-            font=("Segoe UI", 10, "bold")
-        ).pack(
-            side="left"
-        )
+        self.workspace = tk.Frame(self.main_shell, bg=UI_BG)
+        self.workspace.pack(side="top", fill="both", expand=True)
 
-        self.bulan_var = tk.StringVar(
-            value=NAMA_BULAN[self.bulan]
-        )
+        # Variabel periode harus tersedia sebelum widget sidebar dibuat.
+        self.bulan_var = tk.StringVar(value=NAMA_BULAN[self.bulan])
+        self.tahun_var = tk.StringVar(value=str(self.tahun))
 
-        self.combo_bulan = ttk.Combobox(
-            periode_frame,
-            textvariable=self.bulan_var,
-            values=NAMA_BULAN[1:],
-            state="readonly",
-            width=15
-        )
+        self._build_sidebar()
 
-        self.combo_bulan.pack(
-            side="left",
-            padx=5
-        )
-
-        self.combo_bulan.bind(
-            "<<ComboboxSelected>>",
-            self.change_period
-        )
-
-        self.tahun_var = tk.StringVar(
-            value=str(self.tahun)
-        )
-
-        ttk.Entry(
-            periode_frame,
-            textvariable=self.tahun_var,
-            width=8
-        ).pack(
-            side="left",
-            padx=5
-        )
-
-        ttk.Button(
-            periode_frame,
-            text="Gunakan Periode",
-            style="Primary.TButton",
-            command=self.change_period
-        ).pack(
-            side="left",
-            padx=5
-        )
-        
-        # DATA KESELURUHAN
-        # Satu menu untuk membuka data master pegawai atau kalender keseluruhan.
-        self.data_keseluruhan_menu = tk.Menu(
-            self,
-            tearoff=False
-        )
-        self.data_keseluruhan_menu.add_command(
-            label="👥 Data Pegawai",
-            command=self.buka_data_pegawai
-        )
-        self.data_keseluruhan_menu.add_command(
-            label="📍 Data Lokasi",
-            command=self.buka_data_desa
-        )
-        self.data_keseluruhan_menu.add_separator()
-        self.data_keseluruhan_menu.add_command(
-            label="📅 Kalender Keseluruhan",
-            command=self.buka_kalender_keseluruhan
-        )
-        self.data_keseluruhan_menu.add_command(
-            label="🧹 Kelola / Bersihkan Data",
-            command=self.buka_kelola_data
-        )
-
-        ttk.Menubutton(
-            periode_frame,
-            text="Data Keseluruhan ▾",
-            menu=self.data_keseluruhan_menu
-        ).pack(side="left", padx=4)
-
-        ttk.Button(
-            periode_frame,
-            text="📤 Export Excel",
-            style="Primary.TButton",
-            command=self.export_penugasan_excel
-        ).pack(side="left", padx=4)
-
-        ttk.Button(
-            periode_frame,
-            text="↻ Refresh Semua",
-            style="Soft.TButton",
-            command=self.refresh_all
-        ).pack(side="left", padx=4)
-
-        # DAFTAR KEGIATAN DINAMIS dengan scrollbar horizontal yang selalu terlihat.
+        # PEMILIH KEGIATAN: dropdown ringkas, tidak memanjang memenuhi layar.
         self.bagian_frame = tk.Frame(
-            self, bg=UI_PANEL, highlightbackground=UI_BORDER,
-            highlightthickness=1, padx=8, pady=5
+            self.workspace, bg=UI_PANEL, highlightbackground=UI_BORDER,
+            highlightthickness=1, padx=12, pady=8
         )
-        self.bagian_frame.pack(fill="x", padx=15, pady=5)
+        self.bagian_frame.pack(fill="x", padx=15, pady=(10, 7))
 
         tk.Label(
-            self.bagian_frame, text="Kegiatan:", bg=UI_BG,
-            font=("Segoe UI", 10, "bold")
-        ).pack(side="left", padx=(2, 8))
+            self.bagian_frame, text="KEGIATAN",
+            bg=UI_PANEL, fg=UI_MUTED,
+            font=("Segoe UI", 8, "bold")
+        ).pack(side="left", padx=(2, 10))
 
-        strip_holder = tk.Frame(self.bagian_frame, bg=UI_PANEL)
-        strip_holder.pack(side="left", fill="both", expand=True)
-
-        self.bagian_strip_canvas = tk.Canvas(
-            strip_holder, bg=UI_PANEL, highlightthickness=0, height=38
-        )
-        self.bagian_strip_canvas.pack(fill="x", expand=True)
-
-        self.bagian_strip_hscroll = tk.Scrollbar(
-            strip_holder, orient="horizontal",
-            command=self.bagian_strip_canvas.xview,
-            width=12, bg="#CBD5E1", troughcolor="#F1F5F9",
-            activebackground="#94A3B8", relief="flat", bd=0
-        )
-        self.bagian_strip_hscroll.pack(fill="x", pady=(2, 0))
-        self.bagian_strip_canvas.configure(xscrollcommand=self.bagian_strip_hscroll.set)
-
-        self.bagian_strip_inner = tk.Frame(self.bagian_strip_canvas, bg=UI_PANEL)
-        self.bagian_strip_window = self.bagian_strip_canvas.create_window(
-            (0, 0), window=self.bagian_strip_inner, anchor="nw"
-        )
-        self.bagian_strip_inner.bind(
-            "<Configure>",
-            lambda e: self.bagian_strip_canvas.configure(
-                scrollregion=self.bagian_strip_canvas.bbox("all")
-            )
-        )
-        self.bagian_strip_canvas.bind(
-            "<Configure>",
-            lambda e: self.bagian_strip_canvas.itemconfigure(
-                self.bagian_strip_window, height=max(36, e.height)
-            )
-        )
-        self.bagian_strip_canvas.bind(
-            "<Shift-MouseWheel>",
-            lambda e: self.bagian_strip_canvas.xview_scroll(int(-e.delta / 120), "units"),
-            add="+"
-        )
-        self.bagian_strip_canvas.bind(
-            "<MouseWheel>",
-            lambda e: self.bagian_strip_canvas.xview_scroll(int(-e.delta / 120), "units"),
-            add="+"
-        )
-        self.bagian_strip_canvas.bind("<Button-4>", lambda e: self.bagian_strip_canvas.xview_scroll(-2, "units"), add="+")
-        self.bagian_strip_canvas.bind("<Button-5>", lambda e: self.bagian_strip_canvas.xview_scroll(2, "units"), add="+")
-
-        # Tombol tambah kegiatan selalu tetap terlihat di luar strip yang bisa
-        # digeser. Jadi walaupun kegiatan sudah A-Z, tombol ini tidak pernah
-        # ikut terpotong/tersembunyi di ujung kanan.
-        self.btn_tambah_kegiatan = ttk.Button(
-            self.bagian_frame,
-            text="＋ Tambah Kegiatan",
-            command=self.tambah_bagian,
+        self.bagian_dropdown_var = tk.StringVar(value="Memuat kegiatan...")
+        self.bagian_dropdown = ttk.Menubutton(
+            self.bagian_frame, textvariable=self.bagian_dropdown_var,
             style="Soft.TButton"
         )
-        self.btn_tambah_kegiatan.pack(side="right", padx=(8, 2))
+        self.bagian_dropdown.pack(side="left")
+        self.bagian_dropdown_menu = tk.Menu(
+            self.bagian_dropdown, tearoff=False,
+            font=("Segoe UI", 10), activeborderwidth=0,
+            background=UI_PANEL, foreground=UI_TEXT,
+            activebackground=UI_PRIMARY, activeforeground="#FFFFFF",
+            borderwidth=0, relief="flat"
+        )
+        self.bagian_dropdown.configure(menu=self.bagian_dropdown_menu)
+
+        self.btn_tambah_kegiatan = ttk.Button(
+            self.bagian_frame, text="＋ Tambah",
+            command=self.tambah_bagian, style="Primary.TButton"
+        )
+        self.btn_tambah_kegiatan.pack(side="left", padx=(8, 2))
+
+        self.btn_refresh_all = ttk.Button(
+            self.bagian_frame, text="↻ Refresh Semua",
+            command=self.refresh_all, style="Soft.TButton"
+        )
+        self.btn_refresh_all.pack(side="right", padx=(8, 2))
 
         self.bagian_buttons = {}
         self.refresh_bagian_buttons()
 
         # NOTEBOOK
         self.notebook = ttk.Notebook(
-            self
+            self.workspace, style="Hidden.TNotebook"
         )
 
         self.notebook.pack(
             fill="both",
             expand=True,
             padx=16,
-            pady=(6, 14)
+            pady=(2, 14)
+        )
+
+        # Satu dropdown untuk berpindah antar tiga halaman utama.
+        self.view_bar = tk.Frame(
+            self.workspace, bg=UI_PANEL, highlightbackground=UI_BORDER,
+            highlightthickness=1, padx=12, pady=7
+        )
+        self.view_bar.pack(fill="x", padx=16, pady=(0, 4), before=self.notebook)
+        tk.Label(
+            self.view_bar, text="TAMPILAN",
+            bg=UI_PANEL, fg=UI_MUTED, font=("Segoe UI", 8, "bold")
+        ).pack(side="left", padx=(2, 10))
+        self.view_dropdown_var = tk.StringVar(value="Pengaturan Kegiatan")
+        self.view_dropdown = ttk.Menubutton(
+            self.view_bar, textvariable=self.view_dropdown_var,
+            style="Soft.TButton"
+        )
+        self.view_dropdown.pack(side="left")
+        self.view_dropdown_menu = tk.Menu(
+            self.view_dropdown, tearoff=False, font=("Segoe UI", 10),
+            background=UI_PANEL, foreground=UI_TEXT,
+            activebackground=UI_PRIMARY, activeforeground="#FFFFFF",
+            borderwidth=0, relief="flat"
+        )
+        self.view_dropdown.configure(menu=self.view_dropdown_menu)
+        self.view_dropdown_menu.add_command(
+            label="⚙  Pengaturan Kegiatan",
+            command=lambda: self.notebook.select(self.tab_pengaturan)
+        )
+        self.view_dropdown_menu.add_command(
+            label="▦  Kalender Kegiatan",
+            command=lambda: self.notebook.select(self.tab_jadwal)
+        )
+        self.view_dropdown_menu.add_command(
+            label="▤  Data Kegiatan",
+            command=lambda: self.notebook.select(self.tab_data_kegiatan)
         )
 
         self.tab_pengaturan = tk.Frame(
@@ -1810,22 +1751,388 @@ class App(tk.Tk):
             self.on_notebook_tab_changed
         )
 
+    def toggle_theme(self):
+        """Ganti tema dan bangun ulang sel kalender agar warna kegiatan ikut berubah."""
+        self.current_theme = "dark" if getattr(self, "current_theme", "light") == "light" else "light"
+        self.apply_theme()
+
+        # Sel kalender kegiatan memakai warna khusus per kegiatan, bukan hanya
+        # warna netral yang dapat dipetakan oleh apply_theme(). Karena itu sel
+        # lama harus dibuat ulang setelah tema berubah agar warna latar dan
+        # warna teks dihitung dari palet tema yang baru.
+        try:
+            self.load_kalender()
+        except (tk.TclError, AttributeError, IndexError, ValueError):
+            pass
+
+        # Jika jendela Kalender Keseluruhan sedang terbuka, perbarui juga
+        # warna selnya tanpa menutup atau mengubah posisi jendela.
+        try:
+            if (
+                getattr(self, "overall_calendar_window", None) is not None
+                and self.overall_calendar_window.winfo_exists()
+            ):
+                self.load_kalender_keseluruhan()
+        except (tk.TclError, AttributeError, IndexError, ValueError):
+            pass
+
+    def apply_theme(self):
+        """Terapkan palet ke widget yang sudah ada; warna status/kegiatan dibiarkan."""
+        global UI_BG, UI_PANEL, UI_BORDER, UI_TEXT, UI_MUTED, UI_PRIMARY
+        global UI_PRIMARY_HOVER, UI_PRIMARY_LIGHT, UI_SUCCESS_LIGHT
+        global UI_DANGER_LIGHT, UI_TABLE_HEAD, UI_TABLE_ALT, UI_SHADOW
+
+        theme = getattr(self, "current_theme", "light")
+        palette = THEME_PALETTES[theme]
+        old_palette = THEME_PALETTES["dark" if theme == "light" else "light"]
+        # Simpan nilai palet aktif agar pergantian berikutnya dapat memetakan
+        # kembali widget yang telah dibuat dengan warna tema sebelumnya.
+        for name, value in palette.items():
+            globals()[name] = value
+
+        color_map = {
+            old_palette["UI_BG"]: palette["UI_BG"],
+            old_palette["UI_PANEL"]: palette["UI_PANEL"],
+            old_palette["UI_BORDER"]: palette["UI_BORDER"],
+            old_palette["UI_TEXT"]: palette["UI_TEXT"],
+            old_palette["UI_MUTED"]: palette["UI_MUTED"],
+            old_palette["UI_PRIMARY_LIGHT"]: palette["UI_PRIMARY_LIGHT"],
+            old_palette["UI_SUCCESS_LIGHT"]: palette["UI_SUCCESS_LIGHT"],
+            old_palette["UI_DANGER_LIGHT"]: palette["UI_DANGER_LIGHT"],
+            old_palette["UI_TABLE_HEAD"]: palette["UI_TABLE_HEAD"],
+            old_palette["UI_TABLE_ALT"]: palette["UI_TABLE_ALT"],
+            old_palette["UI_SHADOW"]: palette["UI_SHADOW"],
+            "#FFFFFF": palette["UI_PANEL"], "white": palette["UI_PANEL"],
+            "#F8FAFC": palette["UI_TABLE_HEAD"], "#F1F5F9": palette["UI_BORDER"],
+            "#E5E7EB": palette["UI_BORDER"], "#CBD5E1": palette["UI_BORDER"],
+            "#111827": palette["UI_TEXT"], "#172033": palette["UI_TEXT"],
+            "#64748B": palette["UI_MUTED"], "#6B7280": palette["UI_MUTED"],
+            "#F5F7FA": palette["UI_BG"], "#F4F6FA": palette["UI_BG"],
+            "#F9FAFB": palette["UI_BG"], "#F3F4F6": palette["UI_TABLE_HEAD"],
+            "#F1F5F9": palette["UI_TABLE_ALT"], "#E2E8F0": palette["UI_BORDER"],
+            "#D1D5DB": palette["UI_BORDER"], "#000000": palette["UI_TEXT"],
+            "black": palette["UI_TEXT"],
+            "#F1F4F7": palette["UI_TABLE_ALT"],
+            "#F4F4F4": palette["UI_TABLE_ALT"],
+            "#888888": palette["UI_MUTED"],
+            "#F0FDFA": palette["UI_PRIMARY_LIGHT"],
+            "#E8EEF6": palette["UI_TABLE_HEAD"],
+            "#F1F5F9": palette["UI_TABLE_ALT"],
+        }
+
+        # Native Tk menus do not inherit ttk styles, so update them explicitly.
+        for menu_name in ("bagian_dropdown_menu", "view_dropdown_menu", "sidebar_menu_admin"):
+            menu = getattr(self, menu_name, None)
+            if menu is not None:
+                try:
+                    menu.configure(
+                        background=palette["UI_PANEL"],
+                        foreground=palette["UI_TEXT"],
+                        activebackground=palette["UI_PRIMARY"],
+                        activeforeground="#FFFFFF",
+                        borderwidth=0, relief="flat"
+                    )
+                except tk.TclError:
+                    pass
+
+        def recolor(widget):
+            try:
+                options = set(widget.keys())
+                for opt in ("bg", "background", "highlightbackground", "troughcolor"):
+                    if opt in options:
+                        current = widget.cget(opt)
+                        if current in color_map:
+                            widget.configure(**{opt: color_map[current]})
+                for opt in ("fg", "foreground", "insertbackground"):
+                    if opt in options:
+                        current = widget.cget(opt)
+                        if current in color_map:
+                            widget.configure(**{opt: color_map[current]})
+                        elif isinstance(widget, tk.Label) and current in ("#000000", "black"):
+                            widget.configure(**{opt: palette["UI_TEXT"]})
+                if "selectbackground" in options:
+                    widget.configure(selectbackground=palette["UI_PRIMARY"])
+                if isinstance(widget, tk.Canvas):
+                    # Canvas kalender memakai warna kegiatan/status khusus; hanya
+                    # warna dasar netral yang dipetakan melalui color_map.
+                    pass
+                if isinstance(widget, ttk.Treeview):
+                    # Semua tabel memakai palet yang sama. Tag khusus nonaktif
+                    # tetap dibedakan, tetapi tidak lagi memakai latar putih.
+                    for tag_name in widget.tag_names():
+                        if tag_name in ("baris1", "row_even"):
+                            widget.tag_configure(
+                                tag_name, background=palette["UI_PANEL"],
+                                foreground=palette["UI_TEXT"]
+                            )
+                        elif tag_name in ("baris2", "row_odd"):
+                            widget.tag_configure(
+                                tag_name, background=palette["UI_TABLE_ALT"],
+                                foreground=palette["UI_TEXT"]
+                            )
+                        elif tag_name == "nonaktif":
+                            widget.tag_configure(
+                                tag_name, background=palette["UI_TABLE_HEAD"],
+                                foreground=palette["UI_MUTED"]
+                            )
+                        elif tag_name == "hover_row":
+                            widget.tag_configure(
+                                tag_name, background=palette["UI_PRIMARY_LIGHT"],
+                                foreground=palette["UI_TEXT"]
+                            )
+                        elif tag_name == "selected_row":
+                            widget.tag_configure(
+                                tag_name, background=palette["UI_PRIMARY_LIGHT"],
+                                foreground=palette["UI_TEXT"]
+                            )
+                    widget.configure(
+                        background=palette["UI_PANEL"],
+                        foreground=palette["UI_TEXT"]
+                    )
+            except (tk.TclError, TypeError):
+                pass
+            try:
+                for child in widget.winfo_children():
+                    recolor(child)
+            except (tk.TclError, AttributeError):
+                pass
+
+        # Tk root dan seluruh halaman utama. Toplevel yang sudah terbuka juga
+        # merupakan anak root sehingga ikut diperbarui.
+        recolor(self)
+        try:
+            self.configure(bg=palette["UI_BG"])
+            self.sidebar.configure(bg=UI_HEADER)
+            self.sidebar_brand.configure(bg=UI_HEADER, fg=UI_WHITE)
+            self.header_period.configure(bg=UI_HEADER, fg="#D1D5DB")
+            self.sidebar_version.configure(bg=UI_HEADER, fg="#D1D5DB")
+            self.sidebar_period_card.configure(bg=UI_HEADER)
+            self.sidebar_section_admin.configure(
+                bg=UI_HEADER, fg=UI_WHITE,
+                activebackground=UI_HEADER_2, activeforeground=UI_WHITE
+            )
+            self.theme_button.configure(
+                text=("Mode Terang" if theme == "dark" else "Mode Gelap"),
+                bg=UI_HEADER, fg=UI_WHITE,
+                activebackground=UI_HEADER_2, activeforeground=UI_WHITE
+            )
+            self.workspace.configure(bg=palette["UI_BG"])
+        except (tk.TclError, AttributeError):
+            pass
+
+        # Perbarui style ttk untuk combobox, entry, tombol, notebook dan treeview.
+        try:
+            self.build_style()
+            style = ttk.Style(self)
+            style.configure("TEntry", fieldbackground=palette["UI_PANEL"], foreground=palette["UI_TEXT"])
+            style.configure("TCombobox", fieldbackground=palette["UI_PANEL"], foreground=palette["UI_TEXT"], background=palette["UI_PANEL"])
+            style.configure("Treeview", background=palette["UI_PANEL"], fieldbackground=palette["UI_PANEL"], foreground=palette["UI_TEXT"])
+            style.configure("Treeview.Heading", background=palette["UI_TABLE_HEAD"], foreground=palette["UI_TEXT"])
+            style.map(
+                "Treeview",
+                background=[("selected", palette["UI_PRIMARY_LIGHT"])],
+                foreground=[("selected", palette["UI_TEXT"])]
+            )
+            style.configure(
+                "TScrollbar",
+                background=palette["UI_TABLE_HEAD"],
+                troughcolor=palette["UI_BG"],
+                bordercolor=palette["UI_BG"],
+                arrowcolor=palette["UI_MUTED"]
+            )
+            style.map(
+                "TScrollbar",
+                background=[("active", palette["UI_BORDER"])]
+            )
+            style.configure(
+                "TCheckbutton", background=palette["UI_BG"],
+                foreground=palette["UI_TEXT"]
+            )
+            style.map(
+                "TCheckbutton",
+                background=[("active", palette["UI_BG"])],
+                foreground=[("disabled", palette["UI_MUTED"])]
+            )
+        except tk.TclError:
+            pass
+
+        # Re-apply the active palette to every Treeview after ttk styles are
+        # rebuilt. Explicit row tags can otherwise retain their old light-theme
+        # backgrounds while the surrounding interface has already gone dark.
+        def _apply_tree_palette(widget):
+            try:
+                if isinstance(widget, ttk.Treeview):
+                    widget.configure(
+                        style="Treeview",
+                        background=palette["UI_PANEL"],
+                        fieldbackground=palette["UI_PANEL"],
+                        foreground=palette["UI_TEXT"]
+                    )
+                    for tag_name in widget.tag_names():
+                        if tag_name in ("baris1", "row_even"):
+                            widget.tag_configure(
+                                tag_name,
+                                background=palette["UI_PANEL"],
+                                foreground=palette["UI_TEXT"]
+                            )
+                        elif tag_name in ("baris2", "row_odd"):
+                            widget.tag_configure(
+                                tag_name,
+                                background=palette["UI_TABLE_ALT"],
+                                foreground=palette["UI_TEXT"]
+                            )
+                        elif tag_name in ("nonaktif",):
+                            widget.tag_configure(
+                                tag_name,
+                                background=palette["UI_TABLE_HEAD"],
+                                foreground=palette["UI_MUTED"]
+                            )
+                        elif tag_name in ("selected_row", "hover_row"):
+                            widget.tag_configure(
+                                tag_name,
+                                background=palette["UI_PRIMARY_LIGHT"],
+                                foreground=palette["UI_TEXT"]
+                            )
+            except (tk.TclError, TypeError):
+                pass
+            try:
+                for child in widget.winfo_children():
+                    _apply_tree_palette(child)
+            except (tk.TclError, AttributeError):
+                pass
+
+        _apply_tree_palette(self)
+
+    def _build_sidebar(self):
+        """Navbar tunggal; menu administrasi dropdown di kanan."""
+        self.sidebar.configure(bg=UI_HEADER, height=62, bd=0, highlightthickness=0)
+        self.sidebar.pack_propagate(False)
+        self.sidebar_brand = tk.Label(
+            self.sidebar, text="Sistem Penugasan Pegawai",
+            bg=UI_HEADER, fg=UI_WHITE, font=("Segoe UI Semibold", 15)
+        )
+        self.sidebar_brand.pack(side="left", padx=(22, 14))
+        self.header_period = tk.Label(
+            self.sidebar, text="", bg=UI_HEADER, fg="#D1D5DB",
+            font=("Segoe UI", 9)
+        )
+        self.header_period.pack(side="left", padx=(0, 12))
+        self.sidebar_version = tk.Label(
+            self.sidebar, text=f"v{APP_VERSION}", bg=UI_HEADER,
+            fg="#D1D5DB", font=("Segoe UI", 8)
+        )
+        self.sidebar_version.pack(side="right", padx=(4, 14))
+
+        self.sidebar_trigger = tk.Menubutton(
+            self.sidebar, text="Administrasi  ▾", bg=UI_HEADER, fg=UI_WHITE,
+            activebackground=UI_HEADER_2, activeforeground=UI_WHITE,
+            relief="flat", bd=0, padx=14, pady=10, cursor="hand2",
+            font=("Segoe UI", 10, "bold")
+        )
+        self.sidebar_trigger.pack(side="right", padx=5)
+        self.sidebar_section_admin = self.sidebar_trigger
+        self.sidebar_menu_admin = tk.Menu(
+            self.sidebar_trigger, tearoff=False,
+            font=("Segoe UI", 10), bg=UI_PANEL, fg=UI_TEXT,
+            activebackground=UI_PRIMARY, activeforeground="#FFFFFF",
+            bd=0, relief="flat"
+        )
+        for label, command in [
+            ("Data Pegawai", self.buka_data_pegawai),
+            ("Data Lokasi", self.buka_data_desa),
+            ("Kalender Keseluruhan", self.buka_kalender_keseluruhan),
+            ("Kelola / Bersihkan Data", self.buka_kelola_data),
+            ("Export Excel", self.export_penugasan_excel),
+            ("Periksa Update", lambda: self.check_for_updates(manual=True)),
+        ]:
+            self.sidebar_menu_admin.add_command(label=label, command=command)
+        self.sidebar_trigger.configure(menu=self.sidebar_menu_admin)
+
+        self.theme_button = tk.Button(
+            self.sidebar, text="Mode Terang" if self.current_theme == "dark" else "Mode Gelap",
+            command=self.toggle_theme, bg=UI_HEADER, fg=UI_WHITE,
+            activebackground=UI_HEADER_2, activeforeground=UI_WHITE,
+            relief="flat", bd=0, cursor="hand2", font=("Segoe UI", 9),
+            padx=12, pady=8
+        )
+        self.theme_button.pack(side="right", padx=5)
+
+        self.sidebar_period_card = tk.Frame(self.sidebar, bg=UI_HEADER)
+        self.sidebar_period_card.pack(side="right", padx=10)
+        self.combo_bulan = ttk.Combobox(
+            self.sidebar_period_card, textvariable=self.bulan_var,
+            values=NAMA_BULAN[1:], state="readonly", width=11
+        )
+        self.combo_bulan.pack(side="left", padx=(0, 5))
+        self.combo_bulan.bind("<<ComboboxSelected>>", self.change_period)
+        ttk.Entry(self.sidebar_period_card, textvariable=self.tahun_var, width=6).pack(
+            side="left", padx=(0, 5)
+        )
+        ttk.Button(self.sidebar_period_card, text="Terapkan",
+                   style="Primary.TButton", command=self.change_period).pack(side="left")
+        ttk.Button(self.sidebar_period_card, text="Hari Libur",
+                   style="Soft.TButton", command=self.atur_hari_libur).pack(side="left", padx=5)
+
+        self.sidebar_separator = tk.Frame(self.sidebar, bg=UI_BORDER, width=1)
+        self.sidebar_nav_buttons = {}
+        self._sidebar_expanded = False
+
+    def _show_top_menu(self, event=None):
+        """Menu administrasi memakai dropdown native Tk yang menutup otomatis."""
+        self.sidebar_trigger.event_generate("<Button-1>")
+
+    def _hide_top_menu(self):
+        return
+
+    def _toggle_top_menu(self):
+        self._show_top_menu()
+
+    def _run_top_menu_command(self, command):
+        command()
+
+    def _sidebar_track_pointer(self, event=None):
+        """Kompatibilitas untuk binding lama; menu atas dikelola event hover sendiri."""
+        return
+
+    def _set_sidebar_expanded(self, expanded):
+        self._sidebar_expanded = False
+
+    def _set_sidebar_active(self, active_key):
+        for key, btn in getattr(self, "sidebar_nav_buttons", {}).items():
+            selected = key == active_key
+            btn.configure(
+                bg=UI_PRIMARY if selected else UI_HEADER,
+                fg=UI_WHITE if selected else "#CBD5E1",
+                activebackground=UI_PRIMARY_HOVER if selected else UI_HEADER_2
+            )
+
+    def _select_main_page(self, page):
+        """Pilih halaman Notebook lama melalui navigasi sidebar."""
+        try:
+            self.notebook.select(page)
+            if page == self.tab_pengaturan:
+                self._set_sidebar_active("pengaturan")
+            elif page == self.tab_jadwal:
+                self._set_sidebar_active("jadwal")
+            elif page == self.tab_data_kegiatan:
+                self._set_sidebar_active("data_kegiatan")
+        except (tk.TclError, AttributeError):
+            pass
+
     def on_notebook_tab_changed(self, event=None):
-        """Refresh tab aktif dengan indikator loading agar perpindahan tab terasa responsif."""
-        if getattr(self, "_refresh_in_progress", False) or getattr(self, "_schedule_refresh_in_progress", False):
-            return
+        """
+        Navigasi halaman tidak memaksa refresh berat.
+        Data diperbarui oleh tombol Refresh atau setelah operasi yang mengubah data.
+        Ini mencegah halaman tertutup overlay loading saat baru dibuka.
+        """
         try:
             current = self.notebook.select()
-            if current == str(self.tab_data_kegiatan):
-                action, label = self.refresh_data_kegiatan, "Memuat Data Kegiatan..."
+            if current == str(self.tab_pengaturan):
+                self.view_dropdown_var.set("Pengaturan Kegiatan")
             elif current == str(self.tab_jadwal):
-                action, label = self.load_kalender, "Memuat Kalender Kegiatan..."
-            elif current == str(self.tab_pengaturan):
-                action, label = self.refresh_selection_table, "Memuat Data Pegawai..."
-            else:
-                return
-            self.show_loading(label)
-            self.after(80, lambda: self._finish_tab_loading(action))
+                self.view_dropdown_var.set("Kalender Kegiatan")
+            elif current == str(self.tab_data_kegiatan):
+                self.view_dropdown_var.set("Data Kegiatan")
         except (tk.TclError, AttributeError):
             pass
 
@@ -1838,99 +2145,151 @@ class App(tk.Tk):
             self.hide_loading()
 
     def refresh_bagian_buttons(self):
-        """Membangun strip kegiatan yang dapat digeser kiri-kanan sampai A-Z."""
-        inner = getattr(self, "bagian_strip_inner", self.bagian_frame)
-        for widget in inner.winfo_children():
-            widget.destroy()
-        self.bagian_buttons = {}
-
+        """Perbarui dropdown kegiatan agar daftar panjang tetap ringkas."""
         conn = get_connection()
-        rows = conn.execute(
-            "SELECT kode, COALESCE(nama_bagian, '') FROM bagian WHERE periode_id = ? ORDER BY id",
-            (self.periode_id,)
-        ).fetchall()
-        conn.close()
-
-        for kode, nama_bagian in rows:
-            wrap = tk.Frame(inner, bg=UI_PANEL)
-            wrap.pack(side="left", padx=3)
-
-            judul = (nama_bagian or "").strip() or f"Kegiatan {kode}"
-            btn = tk.Button(
-                wrap,
-                text=judul,
-                command=lambda k=kode: self.change_bagian(k),
-                width=16,
-                font=("Segoe UI", 9, "bold")
-            )
-            btn.pack(side="left")
-            btn.bind(
-                "<Double-Button-1>",
-                lambda event, k=kode: self.rename_bagian(k)
-            )
-
-            btn_x = tk.Button(
-                wrap,
-                text="×",
-                command=lambda k=kode: self.hapus_data_bagian(k),
-                width=2,
-                font=("Segoe UI", 9, "bold"),
-                padx=0,
-                pady=0
-            )
-            btn_x.pack(side="left", padx=(1, 0))
-
-            self.bagian_buttons[kode] = btn
-
-        # Tombol Tambah Kegiatan berada di luar strip agar selalu terlihat.
         try:
-            self.bagian_strip_inner.update_idletasks()
-            self.bagian_strip_canvas.configure(scrollregion=self.bagian_strip_canvas.bbox("all"))
-            if hasattr(self, "btn_tambah_kegiatan") and self.btn_tambah_kegiatan.winfo_exists():
-                self.btn_tambah_kegiatan.lift()
-        except Exception:
-            pass
+            rows = conn.execute(
+                "SELECT kode, COALESCE(nama_bagian, '') FROM bagian WHERE periode_id = ? ORDER BY id",
+                (self.periode_id,)
+            ).fetchall()
+        finally:
+            conn.close()
 
-        self.update_bagian_button_state()
+        self.bagian_buttons = {}
+        menu = getattr(self, "bagian_dropdown_menu", None)
+        if menu is None:
+            return
+
+        menu.delete(0, "end")
+        active_label = None
+        for kode, nama_bagian in rows:
+            title = (nama_bagian or "").strip() or f"Kegiatan {kode}"
+            label = f"{kode}  ·  {title}"
+            menu.add_command(
+                label=("✓  " if kode == self.bagian_aktif else "     ") + label,
+                command=lambda k=kode: self.change_bagian(k)
+            )
+            if kode == self.bagian_aktif:
+                active_label = label
+
+        if not rows:
+            menu.add_command(label="Belum ada kegiatan", state="disabled")
+        if active_label is None and rows:
+            active_label = f"{rows[0][0]}  ·  {(rows[0][1] or '').strip() or 'Kegiatan ' + rows[0][0]}"
+        self.bagian_dropdown_var.set(active_label or "Pilih Kegiatan")
 
     def update_bagian_button_state(self):
-        for kode, btn in self.bagian_buttons.items():
-            if kode == self.bagian_aktif:
-                btn.config(bg=UI_HEADER, fg="white")
-            else:
-                btn.config(bg="#F3F4F6", fg="black")
+        """Refresh indikator kegiatan aktif pada dropdown."""
+        try:
+            self.refresh_bagian_buttons()
+        except (tk.TclError, AttributeError):
+            pass
 
     def rename_bagian(self, kode):
-        """Rename kegiatan dengan double-click pada nama tombol kegiatan."""
+        """Mengganti nama tampilan kegiatan dengan dialog singkat."""
         data = load_bagian(self.periode_id, kode)
         if not data:
             return
 
         bagian_id = data[0]
         conn = get_connection()
-        row = conn.execute(
-            "SELECT COALESCE(nama_bagian, '') FROM bagian WHERE id = ?",
-            (bagian_id,)
-        ).fetchone()
-        conn.close()
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(nama_bagian, '') FROM bagian WHERE id = ?",
+                (bagian_id,)
+            ).fetchone()
+        finally:
+            conn.close()
 
         nama_lama = (row[0] if row else "").strip() or f"Kegiatan {kode}"
-        nama_baru = simpledialog.askstring(
-            "Ganti Nama Kegiatan",
-            f"Nama baru untuk {nama_lama}:",
-            initialvalue=nama_lama,
-            parent=self
+
+        dark = getattr(self, "current_theme", "light") == "dark"
+        bg = "#0F172A" if dark else "#F4F7FB"
+        panel = "#182438" if dark else "#FFFFFF"
+        fg = "#F1F5F9" if dark else "#172033"
+        border = "#334155" if dark else "#DCE4EF"
+        accent = "#14B8A6" if dark else "#0F766E"
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Ubah Nama Kegiatan")
+        dialog.transient(self)
+        dialog.configure(bg=bg)
+        dialog.resizable(False, False)
+        dialog.withdraw()
+
+        shell = tk.Frame(
+            dialog, bg=panel, padx=16, pady=14,
+            highlightthickness=1, highlightbackground=border
         )
+        shell.pack(fill="both", expand=True, padx=8, pady=8)
 
+        tk.Label(
+            shell, text=f"Nama kegiatan {kode}", bg=panel, fg=fg,
+            font=("Segoe UI", 12, "bold")
+        ).pack(anchor="w", pady=(0, 10))
+
+        nama_var = tk.StringVar(value=nama_lama)
+        entry = tk.Entry(
+            shell, textvariable=nama_var, bg=bg, fg=fg,
+            insertbackground=fg, relief="flat", bd=0,
+            highlightthickness=1, highlightbackground=border,
+            highlightcolor=accent, font=("Segoe UI", 10)
+        )
+        entry.pack(fill="x", ipady=7)
+
+        error_label = tk.Label(
+            shell, text="", bg=panel, fg="#DC6464",
+            font=("Segoe UI", 8)
+        )
+        error_label.pack(anchor="w", pady=(3, 0))
+
+        actions = tk.Frame(shell, bg=panel)
+        actions.pack(fill="x", pady=(12, 0))
+        hasil = {"nama": None}
+
+        def tutup():
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+
+        def simpan():
+            nama = nama_var.get().strip()
+            if not nama:
+                error_label.config(text="Nama tidak boleh kosong.")
+                entry.focus_set()
+                return
+            hasil["nama"] = nama
+            tutup()
+
+        tk.Button(
+            actions, text="Batal", command=tutup,
+            bg=bg, fg=fg, activebackground=border, activeforeground=fg,
+            relief="flat", bd=0, padx=13, pady=7,
+            font=("Segoe UI", 9), cursor="hand2"
+        ).pack(side="right")
+        tk.Button(
+            actions, text="Simpan", command=simpan,
+            bg=accent, fg="#FFFFFF", activebackground=accent,
+            activeforeground="#FFFFFF", relief="flat", bd=0,
+            padx=14, pady=7, font=("Segoe UI", 9, "bold"),
+            cursor="hand2"
+        ).pack(side="right", padx=(0, 6))
+
+        dialog.bind("<Return>", lambda event: simpan())
+        dialog.bind("<Escape>", lambda event: tutup())
+        dialog.update_idletasks()
+        dialog.geometry("360x150")
+        self.center_window(dialog, self)
+        dialog.deiconify()
+        dialog.grab_set()
+        entry.focus_set()
+        entry.selection_range(0, "end")
+        self.wait_window(dialog)
+
+        nama_baru = hasil["nama"]
         if nama_baru is None:
-            return
-
-        nama_baru = nama_baru.strip()
-        if not nama_baru:
-            messagebox.showwarning(
-                "Nama Kegiatan",
-                "Nama kegiatan tidak boleh kosong."
-            )
             return
 
         conn = None
@@ -1941,10 +2300,14 @@ class App(tk.Tk):
                 (nama_baru, bagian_id)
             )
             conn.commit()
-        except Exception as e:
+        except Exception:
             if conn:
                 conn.rollback()
-            messagebox.showerror("Gagal Mengganti Nama", "Nama kegiatan tidak dapat diubah. Silakan coba lagi.")
+            messagebox.showerror(
+                "Gagal Mengganti Nama",
+                "Nama kegiatan tidak dapat diubah. Silakan coba lagi.",
+                parent=self
+            )
             return
         finally:
             if conn:
@@ -1953,7 +2316,6 @@ class App(tk.Tk):
         self.refresh_bagian_buttons()
         self.load_bagian_data()
 
-    # Double-click nama kegiatan = rename.
     def tambah_bagian(self):
         kode_list = load_bagian_codes(self.periode_id)
         kode_baru = kode_bagian_berikutnya(kode_list)
@@ -2002,55 +2364,32 @@ class App(tk.Tk):
 
         self.bagian_aktif = kode_baru
 
-        # Setelah kegiatan berhasil dibuat, tampilkan indikator loading selama
-        # seluruh tampilan A-Z, pengaturan, kalender, dan data kegiatan disusun
-        # ulang. Ini sengaja dibuat asynchronous supaya spinner sempat terlihat.
-        self.show_loading(
-            f"Menyiapkan Kegiatan {kode_baru}...",
-            parent=self
-        )
-        try:
-            self.update_idletasks()
-            self.update()
-        except Exception:
-            pass
-
+        # Perbarui layar setelah event loop kembali berjalan.
+        # Hindari overlay modal: operasi render lama masih sinkron dan akan
+        # membuat animasi Tkinter ikut berhenti selama proses tersebut.
         def selesai_tambah_kegiatan():
             try:
-                if getattr(self, "_loading_label", None) is not None:
-                    self._loading_label.config(text="Memperbarui daftar kegiatan...")
                 self.refresh_bagian_buttons()
                 self.load_bagian_data()
                 self.load_kalender()
                 self.refresh_data_kegiatan()
+
                 if (
                     getattr(self, "overall_calendar_window", None) is not None
                     and self.overall_calendar_window.winfo_exists()
                 ):
-                    self._show_overall_loading_overlay(
-                        self.overall_calendar_window,
-                        "Memperbarui kegiatan..."
-                    )
-                    try:
-                        self.overall_calendar_window.update_idletasks()
-                        self.overall_calendar_window.update()
-                    except Exception:
-                        pass
                     self.load_kalender_keseluruhan()
-                    self._hide_overall_loading_overlay()
 
                 self.notebook.select(self.tab_pengaturan)
-            except Exception:
-                self.hide_loading()
+            except Exception as exc:
                 messagebox.showerror(
-                    "Gagal Memuat",
-                    "Kegiatan berhasil dibuat, tetapi tampilan belum dapat diperbarui. Silakan tekan Refresh Semua.",
+                    "Pembaruan Tampilan",
+                    "Kegiatan berhasil ditambahkan, tetapi sebagian tampilan "
+                    f"belum dapat diperbarui.\\n\\nDetail: {exc}\\n\\n"
+                    "Gunakan Refresh Semua untuk mencoba kembali.",
                     parent=self
                 )
                 return
-            finally:
-                if getattr(self, "_loading_win", None) is not None:
-                    self.hide_loading()
 
             messagebox.showinfo(
                 "Kegiatan Ditambahkan",
@@ -2064,130 +2403,121 @@ class App(tk.Tk):
     # Refresh ALL
     # =====================================================
     def show_loading(self, text="Sedang memuat data...", parent=None):
-        """Menampilkan indikator loading saat proses UI/database berlangsung."""
+        """Indikator proses non-blocking; tidak menutupi atau mengunci area kerja."""
+        self.hide_loading()
         try:
-            if hasattr(self, "_loading_win") and self._loading_win is not None:
-                self._loading_win.destroy()
-        except Exception:
-            pass
-
-        try:
-            owner = parent if parent is not None else self
-            win = tk.Toplevel(owner)
-            self._loading_win = win
-            win.title("Memuat")
-            win.transient(owner)
-            self.enable_native_window_controls(win)
-            win.resizable(False, False)
-            win.protocol("WM_DELETE_WINDOW", lambda: None)
-
-            frame = tk.Frame(win, bg="white", padx=28, pady=22,
-                             highlightthickness=1, highlightbackground="#CCCCCC")
-            frame.pack(fill="both", expand=True)
-
-            tk.Label(
-                frame, text="Mohon tunggu", bg="white",
-                font=("Segoe UI", 12, "bold")
-            ).pack(pady=(0, 7))
-
-            self._loading_label = tk.Label(
-                frame, text=text, bg="white", fg=UI_MUTED,
-                font=("Segoe UI", 9)
+            owner = parent if parent is not None and parent.winfo_exists() else self
+            palette = {
+                "bg": UI_PANEL, "fg": UI_TEXT,
+                "muted": UI_MUTED, "accent": UI_PRIMARY,
+                "border": UI_BORDER
+            }
+            chip = tk.Frame(
+                owner, bg=palette["bg"], padx=14, pady=9,
+                highlightthickness=1, highlightbackground=palette["border"],
+                bd=0
             )
-            self._loading_label.pack(pady=(0, 8))
-
-            # Spinner teks tetap bergerak dan terlihat jelas walaupun proses
-            # hanya membutuhkan beberapa saat. Progressbar tetap dipakai
-            # sebagai indikator tambahan.
-            self._loading_spinner_index = 0
-            self._loading_spinner = tk.Label(
-                frame, text="◐", bg="white", fg="#0F766E",
-                font=("Segoe UI Symbol", 24, "bold")
-            )
-            self._loading_spinner.pack(pady=(0, 8))
-
-            self._loading_bar = ttk.Progressbar(
-                frame, mode="indeterminate", length=250
-            )
-            self._loading_bar.pack()
-            self._loading_bar.start(12)
-            self._animate_loading_spinner()
-
-            # Posisikan tepat di tengah window yang sedang diproses.
-            self.update_idletasks()
-            win.update_idletasks()
-            self.center_window(win, owner)
+            # Hanya chip kecil di pojok kanan atas. Area kerja tetap bisa dilihat
+            # dan tidak ada scrim yang menghalangi klik pengguna.
+            chip.place(relx=1.0, x=-18, y=14, anchor="ne")
+            chip.lift()
             try:
-                win.lift(owner)
-                win.focus_force()
-            except Exception:
+                owner.update_idletasks()
+                owner.update()
+            except tk.TclError:
                 pass
-            # update() sengaja dipakai di sini, bukan hanya update_idletasks(),
-            # agar jendela loading benar-benar sempat digambar sebelum proses
-            # berikutnya dimulai. Tanpa ini Windows kadang hanya menampilkan
-            # frame/jendela kosong ketika proses refresh langsung berjalan.
-            win.update()
-            self.update()
-            # Jangan grab_set: proses refresh masih perlu dapat menampilkan
-            # messagebox jika terjadi error.
+
+            dot = tk.Canvas(
+                chip, width=18, height=18, bg=palette["bg"],
+                highlightthickness=0, bd=0
+            )
+            dot.pack(side="left", padx=(0, 8))
+            dot.create_oval(4, 4, 14, 14, outline=palette["border"], width=2)
+            dot.create_arc(
+                4, 4, 14, 14, start=25, extent=105, style="arc",
+                outline=palette["accent"], width=2, tags=("arc",)
+            )
+            label = tk.Label(
+                chip, text=text, bg=palette["bg"], fg=palette["fg"],
+                font=("Segoe UI", 9, "bold"), padx=0, pady=0
+            )
+            label.pack(side="left")
+            self._loading_bar = ttk.Progressbar(
+                chip, mode="indeterminate", length=54,
+                style="Horizontal.TProgressbar"
+            )
+            self._loading_bar.pack(side="left", padx=(10, 0))
+            self._loading_bar.start(12)
+            self._loading_win = chip
+            self._loading_owner = owner
+            self._loading_label = label
+            self._loading_spinner = dot
+            self._loading_spinner_index = 0
+
+            def animate():
+                try:
+                    if not chip.winfo_exists():
+                        return
+                    idx = self._loading_spinner_index
+                    dot.itemconfigure("arc", start=(25 + idx * 14) % 360)
+                    self._loading_spinner_index = idx + 1
+                    self._loading_spinner_job = self.after(55, animate)
+                except tk.TclError:
+                    self._loading_spinner_job = None
+
+            self._loading_spinner_job = self.after(55, animate)
+            owner.update_idletasks()
         except Exception:
             self._loading_win = None
-
-        try:
-            self.update()
-        except Exception:
-            pass
+            self._loading_owner = None
+            self._loading_label = None
+            self._loading_spinner = None
+            self._loading_spinner_job = None
 
     def _animate_loading_spinner(self):
-        """Menggerakkan spinner loading secara ringan melalui event loop Tkinter."""
+        """Kompatibilitas untuk pemanggil animasi lama."""
         try:
-            win = getattr(self, "_loading_win", None)
             spinner = getattr(self, "_loading_spinner", None)
-            if win is None or spinner is None or not win.winfo_exists():
+            if spinner is None or not spinner.winfo_exists():
                 return
-            try:
-                owner = win.transient()
-                if owner:
-                    win.lift(owner)
-                else:
-                    win.lift()
-            except Exception:
-                pass
-            frames = ("◐", "◓", "◑", "◒")
             idx = getattr(self, "_loading_spinner_index", 0)
-            spinner.config(text=frames[idx % len(frames)])
+            spinner.itemconfigure("arc", start=(25 + idx * 14) % 360)
             self._loading_spinner_index = idx + 1
-            self._loading_spinner_job = self.after(100, self._animate_loading_spinner)
-        except Exception:
+            self._loading_spinner_job = self.after(55, self._animate_loading_spinner)
+        except (tk.TclError, AttributeError):
             self._loading_spinner_job = None
 
     def hide_loading(self):
-        """Menutup indikator loading jika sedang tampil."""
-        try:
-            job = getattr(self, "_loading_spinner_job", None)
-            if job is not None:
+        """Hentikan animasi dan hilangkan indikator proses, aman dipanggil berulang."""
+        job = getattr(self, "_loading_spinner_job", None)
+        if job is not None:
+            try:
                 self.after_cancel(job)
-        except Exception:
-            pass
+            except Exception:
+                pass
         self._loading_spinner_job = None
-        try:
-            if hasattr(self, "_loading_bar") and self._loading_bar is not None:
-                self._loading_bar.stop()
-        except Exception:
-            pass
-        try:
-            if hasattr(self, "_loading_win") and self._loading_win is not None:
-                self._loading_win.destroy()
-        except Exception:
-            pass
+
+        for attr in ("_loading_bar",):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                try:
+                    widget.stop()
+                except Exception:
+                    pass
+
+        widget = getattr(self, "_loading_win", None)
+        if widget is not None:
+            try:
+                if widget.winfo_exists():
+                    widget.destroy()
+            except Exception:
+                pass
+
         self._loading_win = None
+        self._loading_owner = None
         self._loading_bar = None
         self._loading_label = None
         self._loading_spinner = None
-        try:
-            self.update_idletasks()
-        except Exception:
-            pass
 
     def refresh_after_schedule(self, text="Menyegarkan kalender dan data...", parent=None):
         """Refresh bertahap setelah penambahan/penghapusan jadwal."""
@@ -2464,98 +2794,102 @@ class App(tk.Tk):
         )
 
         # =====================================================
-        # LAYOUT UTAMA: PENGATURAN DI KIRI, PEGAWAI DI KANAN
+        # SATU PANEL PENGATURAN TERPADU
         # =====================================================
         frame = tk.Frame(scroll_frame, bg=UI_BG)
-        frame.pack(fill="both", expand=True, padx=20, pady=18)
-        frame.grid_columnconfigure(0, weight=0, minsize=390)
-        frame.grid_columnconfigure(1, weight=1)
-        # Baris atas hanya untuk pengaturan dan kontrol pegawai.
-        # Tabel pegawai ditempatkan di baris kedua agar dapat memakai
-        # seluruh lebar layar, termasuk ruang kosong di bawah pengaturan.
-        frame.grid_rowconfigure(0, weight=0)
+        frame.pack(fill="both", expand=True, padx=16, pady=12)
+        frame.grid_columnconfigure(0, weight=1)
         frame.grid_rowconfigure(1, weight=1)
 
-        settings = tk.LabelFrame(
-            frame, text="  PENGATURAN KEGIATAN  ", bg=UI_BG,
-            font=("Segoe UI", 12, "bold"), padx=18, pady=14
+        config_card = tk.Frame(
+            frame, bg=UI_PANEL, padx=16, pady=13,
+            highlightthickness=1, highlightbackground=UI_BORDER
         )
-        settings.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        config_card.grid(row=0, column=0, sticky="ew")
+        config_card.grid_columnconfigure(0, weight=3)
+        config_card.grid_columnconfigure(1, weight=2)
+
+        title_row = tk.Frame(config_card, bg=UI_PANEL)
+        title_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        tk.Label(
+            title_row, text="PENGATURAN KEGIATAN",
+            bg=UI_PANEL, fg=UI_TEXT, font=("Segoe UI", 12, "bold")
+        ).pack(side="left")
+        tk.Label(
+            title_row, text="Atur informasi, anggaran, dan pegawai dalam satu tempat",
+            bg=UI_PANEL, fg=UI_MUTED, font=("Segoe UI", 9)
+        ).pack(side="left", padx=(12, 0))
+
+        settings = tk.Frame(config_card, bg=UI_PANEL)
+        settings.grid(row=1, column=0, sticky="nsew", padx=(0, 18))
         settings.grid_columnconfigure(1, weight=1)
 
-        tk.Label(settings, text="Deskripsi", bg=UI_BG).grid(row=0, column=0, sticky="nw", pady=8)
-        # State teks deskripsi. StringVar dipertahankan untuk kompatibilitas
-        # dengan loader lama, sedangkan widget utama menggunakan Text agar
-        # deskripsi panjang bisa dibaca dan diedit beberapa baris.
+        tk.Label(settings, text="Deskripsi", bg=UI_PANEL, fg=UI_TEXT).grid(
+            row=0, column=0, sticky="nw", padx=(0, 12), pady=5
+        )
         self.kegiatan_var = tk.StringVar(value="")
         self.kegiatan_text = tk.Text(
-            settings, height=4, width=34, wrap="word",
+            settings, height=3, width=34, wrap="word",
             font=("Segoe UI", 10), relief="solid", borderwidth=1
         )
-        self.kegiatan_text.grid(row=0, column=1, sticky="ew", pady=8)
-
-        tk.Label(settings, text="Penanggung Jawab", bg=UI_BG, font=("Segoe UI", 10, "bold")).grid(row=1, column=0, sticky="w", pady=8)
-        self.pj_var = tk.StringVar()
-        self.pj_options = {}
-        self.combo_pj = ttk.Combobox(settings, textvariable=self.pj_var, state="readonly", width=31)
-        self.combo_pj.grid(row=1, column=1, sticky="ew", pady=8)
-
-        tk.Label(settings, text="Dana Bulanan", bg=UI_BG, font=("Segoe UI", 10, "bold")).grid(row=2, column=0, sticky="w", pady=8)
-        self.dana_var = tk.StringVar()
-        ttk.Entry(settings, textvariable=self.dana_var, width=20).grid(row=2, column=1, sticky="w", pady=8)
-
-        tk.Label(settings, text="Double-click nama kegiatan di atas untuk mengganti nama.", bg=UI_BG, fg=UI_MUTED, font=("Segoe UI", 9)).grid(row=3, column=0, columnspan=2, sticky="w", pady=(14, 4))
-        tk.Label(settings, text="Nama kegiatan hanya label tampilan.", bg=UI_BG, fg="#6B7280", font=("Segoe UI", 8)).grid(row=4, column=0, columnspan=2, sticky="w")
-
-        # =====================================================
-        # KONTROL PEGAWAI (BARIS ATAS)
-        # =====================================================
-        # Panel ini hanya berisi instruksi, tombol otomatis, total, simpan,
-        # dan pencarian. Tabel pegawai dipindahkan ke baris kedua agar
-        # memanfaatkan seluruh lebar jendela.
-        pegawai_panel = tk.LabelFrame(
-            frame, text="  PEGAWAI UNTUK KEGIATAN INI  ", bg=UI_BG,
-            font=("Segoe UI", 12, "bold"), padx=10, pady=8
-        )
-        pegawai_panel.grid(row=0, column=1, sticky="nsew")
-        pegawai_panel.grid_columnconfigure(0, weight=1)
+        self.kegiatan_text.grid(row=0, column=1, sticky="ew", pady=5)
 
         tk.Label(
-            pegawai_panel,
-            text="Pilih pegawai secara manual. Komposisi target menjadi acuan jumlah turun per golongan.",
-            bg=UI_BG, fg=UI_MUTED
-        ).grid(row=0, column=0, sticky="w", pady=(0, 7))
-
-        tombol_frame = tk.Frame(pegawai_panel, bg=UI_BG)
-        tombol_frame.grid(row=1, column=0, sticky="w", pady=(0, 7))
-        ttk.Button(
-            tombol_frame,
-            text="⚙ Tentukan Komposisi Target",
-            command=self.tentukan_komposisi_target
-        ).pack(side="left", padx=(0, 6))
-
-        self.info_dana = tk.Label(
-            pegawai_panel,
-            text="Pegawai terpilih: 0 orang",
-            bg=UI_BG,
-            fg=UI_TEXT,
-            font=("Segoe UI Semibold", 11, "bold")
+            settings, text="Penanggung Jawab", bg=UI_PANEL, fg=UI_TEXT,
+            font=("Segoe UI", 9, "bold")
+        ).grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
+        self.pj_var = tk.StringVar()
+        self.pj_options = {}
+        self.combo_pj = ttk.Combobox(
+            settings, textvariable=self.pj_var, state="readonly", width=31
         )
-        self.info_dana.grid(row=2, column=0, sticky="w", pady=(2, 7))
+        self.combo_pj.grid(row=1, column=1, sticky="ew", pady=5)
 
-        # Simpan tetap berada di bagian atas agar mudah ditemukan.
-        save_frame = tk.Frame(pegawai_panel, bg=UI_BG)
-        save_frame.grid(row=3, column=0, sticky="ew", pady=(0, 7))
-        save_frame.grid_columnconfigure(0, weight=1)
+        tk.Label(
+            settings, text="Dana Bulanan", bg=UI_PANEL, fg=UI_TEXT,
+            font=("Segoe UI", 9, "bold")
+        ).grid(row=2, column=0, sticky="w", padx=(0, 12), pady=5)
+        self.dana_var = tk.StringVar()
+        budget_actions = tk.Frame(settings, bg=UI_PANEL)
+        budget_actions.grid(row=2, column=1, sticky="ew", pady=5)
+        budget_actions.grid_columnconfigure(0, weight=1)
+        ttk.Entry(budget_actions, textvariable=self.dana_var, width=20).pack(
+            side="left", fill="x", expand=True, padx=(0, 10)
+        )
         ttk.Button(
-            save_frame,
-            text="💾 Simpan Pengaturan",
-            command=self.simpan_bagian
-        ).grid(row=0, column=0, sticky="e", ipadx=18, ipady=7)
+            budget_actions, text="Simpan Pengaturan",
+            command=self.simpan_bagian, style="Primary.TButton"
+        ).pack(side="left")
+        tk.Label(
+            settings, text="Nama kegiatan dapat diubah dengan double-click pada pilihan kegiatan di atas.",
+            bg=UI_PANEL, fg=UI_MUTED, font=("Segoe UI", 8)
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(5, 0))
 
-        # =====================================================
-        # TABEL PEGAWAI FULL WIDTH
-        # =====================================================
+        selection_panel = tk.Frame(config_card, bg=UI_PANEL)
+        selection_panel.grid(row=1, column=1, sticky="nsew")
+        selection_panel.grid_columnconfigure(0, weight=1)
+
+        action_row = tk.Frame(selection_panel, bg=UI_PANEL)
+        action_row.grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            action_row, text="✦  Tentukan Komposisi Target",
+            command=self.tentukan_komposisi_target, style="Soft.TButton"
+        ).pack(side="left")
+        self.info_dana = tk.Label(
+            selection_panel, text="Pegawai terpilih: 0 orang",
+            bg=UI_PANEL, fg=UI_TEXT, font=("Segoe UI", 10, "bold")
+        )
+        self.info_dana.grid(row=1, column=0, sticky="w", pady=(8, 5))
+
+        self.komposisi_text = tk.Text(
+            selection_panel, height=5, wrap="word",
+            bg=UI_PANEL, fg=UI_TEXT, relief="flat", borderwidth=0,
+            font=("Segoe UI", 9), state="disabled",
+            highlightthickness=1, highlightbackground=UI_BORDER
+        )
+        self.komposisi_text.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+
+        # Area tabel berada di bawah panel terpadu dan memakai seluruh lebar.
         self.build_tabel_pilih(frame)
 
     def build_tabel_pilih(self, parent):
@@ -2616,18 +2950,56 @@ class App(tk.Tk):
             )
         ).grid(row=0, column=2, padx=(5, 0))
 
+        filter_row = tk.Frame(search_frame, bg=UI_BG)
+        filter_row.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(7, 0))
+        filter_row.grid_columnconfigure(5, weight=1)
+
+        self.filter_golongan_var = tk.StringVar(value="Semua Golongan")
+        self.filter_jabatan_var = tk.StringVar(value="Semua Jabatan")
+        self.filter_tarif_var = tk.StringVar(value="Semua Tarif")
+
+        tk.Label(filter_row, text="Filter:", bg=UI_BG, fg=UI_MUTED,
+                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 8))
+        self.filter_golongan_combo = ttk.Combobox(
+            filter_row, textvariable=self.filter_golongan_var,
+            state="readonly", width=19
+        )
+        self.filter_golongan_combo.pack(side="left", padx=(0, 7))
+        self.filter_jabatan_combo = ttk.Combobox(
+            filter_row, textvariable=self.filter_jabatan_var,
+            state="readonly", width=25
+        )
+        self.filter_jabatan_combo.pack(side="left", padx=(0, 7))
+        self.filter_tarif_combo = ttk.Combobox(
+            filter_row, textvariable=self.filter_tarif_var,
+            state="readonly", width=19
+        )
+        self.filter_tarif_combo.pack(side="left", padx=(0, 7))
+        ttk.Button(
+            filter_row, text="Reset Filter", style="Soft.TButton",
+            command=self.reset_filter_pegawai
+        ).pack(side="left")
+
+        self._populate_employee_filters()
+        for combo in (
+            self.filter_golongan_combo,
+            self.filter_jabatan_combo,
+            self.filter_tarif_combo
+        ):
+            combo.bind("<<ComboboxSelected>>",
+                       lambda event: self.refresh_selection_table())
+
         table_area = tk.Frame(
             selection_area,
             bg=UI_BG
         )
         table_area.grid(row=1, column=0, sticky="nsew")
         table_area.grid_columnconfigure(0, weight=1)
-        table_area.grid_columnconfigure(1, weight=0)
         table_area.grid_rowconfigure(0, weight=1)
 
         table_frame = tk.Frame(
             table_area,
-            bg="white",
+            bg=UI_PANEL,
             height=520
         )
 
@@ -2713,54 +3085,7 @@ class App(tk.Tk):
         self.modernize_tree(self.table_pilih)
         self.table_pilih.bind("<ButtonRelease-1>", self.toggle_pegawai)
 
-        # Ringkasan komposisi manual di sebelah kanan.
-        self.komposisi_frame = tk.Frame(
-            table_area,
-            bg="white",
-            width=340,
-            height=520,
-            highlightthickness=1,
-            highlightbackground="#D5DADF"
-        )
-        self.komposisi_frame.grid(
-            row=0, column=1, sticky="nsew",
-            padx=(12, 0)
-        )
-        table_area.grid_columnconfigure(1, minsize=340)
-        self.komposisi_frame.pack_propagate(False)
-
-        tk.Label(
-            self.komposisi_frame,
-            text="KOMPOSISI TERPILIH",
-            bg="white",
-            font=("Segoe UI", 11, "bold")
-        ).pack(anchor="w", padx=15, pady=(14, 3))
-
-        tk.Label(
-            self.komposisi_frame,
-            text="Ringkasan pegawai terpilih",
-            bg="white",
-            fg=UI_MUTED,
-            font=("Segoe UI", 9)
-        ).pack(anchor="w", padx=15)
-
-        self.komposisi_text = tk.Text(
-            self.komposisi_frame,
-            height=18,
-            width=32,
-            bg="white",
-            relief="flat",
-            borderwidth=0,
-            font=("Segoe UI", 10),
-            state="disabled"
-        )
-        self.komposisi_text.pack(
-            fill="both",
-            expand=True,
-            padx=12,
-            pady=(8, 5)
-        )
-
+        # Ringkasan komposisi sudah digabung ke panel pengaturan di atas.
         self.refresh_selection_table()
 
     def refresh_komposisi_manual(self):
@@ -2811,8 +3136,10 @@ class App(tk.Tk):
         win = tk.Toplevel(self)
         self.enable_native_window_controls(win)
         win.title("Pilih Komposisi Target")
-        win.geometry("1200x760")
-        win.minsize(950, 620)
+        win.geometry("860x600")
+        win.minsize(640, 460)
+        win.resizable(True, True)
+        win.configure(bg=UI_BG)
         win.transient(self)
         self.enable_native_window_controls(win)
         win.grab_set()
@@ -2822,26 +3149,26 @@ class App(tk.Tk):
         tk.Label(
             win,
             text=f"Ditemukan {len(hasil)} komposisi tepat untuk {rupiah(dana)}",
-            font=("Segoe UI", 14, "bold")
-        ).pack(anchor="w", padx=24, pady=(18, 4))
+            font=("Segoe UI", 13, "bold"), bg=UI_BG, fg=UI_TEXT
+        ).pack(anchor="w", padx=18, pady=(14, 3))
         tk.Label(
             win,
             text="Komposisi dihitung dalam JUMLAH TURUN. Pegawai tidak dipilih otomatis.",
-            fg=UI_MUTED, font=("Segoe UI", 10)
-        ).pack(anchor="w", padx=24, pady=(0, 12))
+            fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 9)
+        ).pack(anchor="w", padx=18, pady=(0, 9))
 
-        outer = tk.Frame(win, bg="#F3F4F6")
-        outer.pack(fill="both", expand=True, padx=24, pady=(0, 12))
+        outer = tk.Frame(win, bg=UI_BG)
+        outer.pack(fill="both", expand=True, padx=16, pady=(0, 9))
         outer.grid_rowconfigure(0, weight=1)
         outer.grid_columnconfigure(0, weight=1)
 
-        canvas = tk.Canvas(outer, highlightthickness=0, bg="#F3F4F6")
+        canvas = tk.Canvas(outer, highlightthickness=0, bg=UI_BG)
         canvas.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        content = tk.Frame(canvas, bg="#F3F4F6")
+        content = tk.Frame(canvas, bg=UI_BG)
         window_id = canvas.create_window((0, 0), window=content, anchor="nw")
         content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
@@ -2849,8 +3176,12 @@ class App(tk.Tk):
         selected = tk.IntVar(value=hasil[0]["nomor"] if hasil else 0)
 
         for item in hasil:
-            card = tk.Frame(content, bg="white", bd=1, relief="solid", padx=12, pady=10)
-            card.pack(fill="x", padx=8, pady=5)
+            card = tk.Frame(
+                content, bg=UI_PANEL, bd=0, relief="flat",
+                padx=10, pady=7, highlightthickness=1,
+                highlightbackground=UI_BORDER
+            )
+            card.pack(fill="x", padx=5, pady=3)
 
             parts = []
             for golongan, tarif, jumlah in item["signature"]:
@@ -2863,25 +3194,25 @@ class App(tk.Tk):
             rb = ttk.Radiobutton(card, variable=selected, value=item["nomor"])
             rb.grid(row=0, column=0, rowspan=2, padx=(2, 10), sticky="n")
             tk.Label(
-                card, text=f"Komposisi {item['nomor']}", bg="white",
-                font=("Segoe UI", 10, "bold")
+                card, text=f"Komposisi {item['nomor']}", bg=UI_PANEL,
+                font=("Segoe UI", 9, "bold"), fg=UI_TEXT
             ).grid(row=0, column=1, sticky="w")
             tk.Label(
-                card, text=signature_text, bg="white", justify="left",
-                anchor="w", wraplength=820, font=("Segoe UI", 10)
-            ).grid(row=1, column=1, sticky="w", pady=(4, 0))
+                card, text=signature_text, bg=UI_PANEL, justify="left",
+                anchor="w", wraplength=560, font=("Segoe UI", 9), fg=UI_TEXT
+            ).grid(row=1, column=1, sticky="w", pady=(2, 0))
             tk.Label(
                 card,
                 text=f"{item['jumlah_turun']} kali turun  •  {rupiah(item['total'])}",
-                bg="white", fg=UI_MUTED, font=("Segoe UI", 9, "bold")
-            ).grid(row=0, column=2, rowspan=2, padx=(18, 4), sticky="e")
+                bg=UI_PANEL, fg=UI_PRIMARY, font=("Segoe UI", 9, "bold")
+            ).grid(row=0, column=2, rowspan=2, padx=(10, 4), sticky="e")
             card.grid_columnconfigure(1, weight=1)
             card.bind("<Button-1>", lambda e, n=item["nomor"]: selected.set(n))
 
         result = {"pilihan": None}
 
-        buttons = tk.Frame(win)
-        buttons.pack(fill="x", padx=24, pady=(0, 18))
+        buttons = tk.Frame(win, bg=UI_BG)
+        buttons.pack(fill="x", padx=16, pady=(0, 12))
 
         def pilih():
             if not selected.get():
@@ -2994,11 +3325,145 @@ class App(tk.Tk):
         """Kompatibilitas lama: aturan komposisi tidak lagi memilih nama otomatis."""
         return None
 
+    def _refresh_selection_table_chunked(self, chunk_size=80):
+        """Render tabel pegawai per-batch supaya animasi dan UI tetap responsif."""
+        tree = getattr(self, "table_pilih", None)
+        if tree is None:
+            self.hide_loading()
+            return
+
+        try:
+            # Bersihkan isi lama dan siapkan gaya tema.
+            for item in tree.get_children():
+                tree.delete(item)
+
+            palette = THEME_PALETTES.get(
+                getattr(self, "current_theme", "light"),
+                THEME_PALETTES["light"]
+            )
+            tree.tag_configure("baris1", background=palette["UI_PANEL"],
+                               foreground=palette["UI_TEXT"])
+            tree.tag_configure("baris2", background=palette["UI_TABLE_ALT"],
+                               foreground=palette["UI_TEXT"])
+
+            keyword = ""
+            if hasattr(self, "search_pegawai_var"):
+                keyword = self.search_pegawai_var.get().strip().lower()
+
+            rows = []
+            for p in self.pegawai:
+                search_text = " ".join(str(p[i] or "") for i in range(1, 7)).lower()
+                if keyword and keyword not in search_text:
+                    continue
+                rows.append(p)
+
+            self._employee_render_rows = rows
+            self._employee_render_index = 0
+            self._employee_render_total = len(rows)
+            self._employee_render_chunk_size = max(20, int(chunk_size))
+
+            if getattr(self, "_loading_label", None) is not None:
+                self._loading_label.config(
+                    text=f"Menyiapkan {len(rows):,} data pegawai..."
+                )
+
+            self._render_employee_table_chunk()
+        except Exception as exc:
+            self.hide_loading()
+            messagebox.showerror(
+                "Gagal Memuat",
+                f"Daftar pegawai tidak dapat ditampilkan.\\n\\nDetail: {exc}",
+                parent=self
+            )
+
+    def _render_employee_table_chunk(self):
+        """Masukkan sebagian baris, lalu beri event loop kesempatan menggambar."""
+        try:
+            tree = getattr(self, "table_pilih", None)
+            if tree is None or not tree.winfo_exists():
+                self.hide_loading()
+                return
+
+            rows = getattr(self, "_employee_render_rows", [])
+            index = getattr(self, "_employee_render_index", 0)
+            stop = min(index + self._employee_render_chunk_size, len(rows))
+
+            for pos in range(index, stop):
+                p = rows[pos]
+                pegawai_id = p[0]
+                tanda = "✓" if pegawai_id in self.selected_ids else ""
+                tag = "baris1" if (pos + 1) % 2 == 0 else "baris2"
+                tree.insert(
+                    "", "end", iid=str(pegawai_id),
+                    values=(
+                        pos + 1, tanda, p[1], p[5], p[6], rupiah(p[7])
+                    ),
+                    tags=(tag,)
+                )
+
+            self._employee_render_index = stop
+            total = len(rows)
+
+            if getattr(self, "_loading_label", None) is not None:
+                percent = 100 if total == 0 else int(stop * 100 / total)
+                self._loading_label.config(
+                    text=f"Memuat data pegawai... {stop:,} dari {total:,} ({percent}%)"
+                )
+
+            if stop < total:
+                # 1 ms memberi kesempatan spinner, progressbar, dan input UI
+                # diproses sebelum batch berikutnya.
+                self.after(1, self._render_employee_table_chunk)
+                return
+
+            if hasattr(self, "info_dana"):
+                self.info_dana.config(
+                    text=f"Pegawai terpilih: {len(self.selected_ids)} orang"
+                )
+            self.refresh_komposisi_manual()
+            self._employee_render_rows = []
+            self.hide_loading()
+        except Exception as exc:
+            self._employee_render_rows = []
+            self.hide_loading()
+            messagebox.showerror(
+                "Gagal Memuat",
+                f"Terjadi kendala saat menyusun tabel pegawai.\\n\\nDetail: {exc}",
+                parent=self
+            )
+
+    def _populate_employee_filters(self):
+        """Isi opsi filter dari data pegawai aktif tanpa mengubah data sumber."""
+        if not hasattr(self, "filter_golongan_combo"):
+            return
+        golongan = sorted({
+            str(p[5] or "Tidak diketahui").strip() or "Tidak diketahui"
+            for p in self.pegawai
+        }, key=str.lower)
+        jabatan = sorted({
+            str(p[6] or "Tidak diketahui").strip() or "Tidak diketahui"
+            for p in self.pegawai
+        }, key=str.lower)
+        tarif = sorted({int(p[7] or 0) for p in self.pegawai})
+        self.filter_golongan_combo["values"] = ["Semua Golongan"] + golongan
+        self.filter_jabatan_combo["values"] = ["Semua Jabatan"] + jabatan
+        self.filter_tarif_combo["values"] = (
+            ["Semua Tarif"] + [rupiah(v) for v in tarif]
+        )
+
+    def reset_filter_pegawai(self):
+        self.search_pegawai_var.set("")
+        self.filter_golongan_var.set("Semua Golongan")
+        self.filter_jabatan_var.set("Semua Jabatan")
+        self.filter_tarif_var.set("Semua Tarif")
+        self.refresh_selection_table()
+
     def refresh_selection_table(self):
 
         # Tabel belum dibuat, jangan refresh dulu
         if not hasattr(self, "table_pilih"):
             return
+        self._populate_employee_filters()
 
         # Bersihkan tabel
         for item in self.table_pilih.get_children():
@@ -3007,12 +3472,12 @@ class App(tk.Tk):
         # Warna baris selang-seling
         self.table_pilih.tag_configure(
             "baris1",
-            background="#FFFFFF"
+            background=THEME_PALETTES[getattr(self, "current_theme", "light")]["UI_PANEL"]
         )
 
         self.table_pilih.tag_configure(
             "baris2",
-            background="#F1F4F7"
+            background=THEME_PALETTES[getattr(self, "current_theme", "light")]["UI_TABLE_ALT"]
         )
 
         # Ambil teks pencarian
@@ -3028,6 +3493,10 @@ class App(tk.Tk):
                 .strip()
                 .lower()
             )
+
+        selected_golongan = getattr(self, "filter_golongan_var", tk.StringVar(value="Semua Golongan")).get()
+        selected_jabatan = getattr(self, "filter_jabatan_var", tk.StringVar(value="Semua Jabatan")).get()
+        selected_tarif = getattr(self, "filter_tarif_var", tk.StringVar(value="Semua Tarif")).get()
 
         total = 0
         nomor_baris = 1
@@ -3050,6 +3519,12 @@ class App(tk.Tk):
             ]).lower()
 
             if keyword and keyword not in teks_pencarian:
+                continue
+            if selected_golongan != "Semua Golongan" and (str(p[5] or "Tidak diketahui").strip() or "Tidak diketahui") != selected_golongan:
+                continue
+            if selected_jabatan != "Semua Jabatan" and (str(p[6] or "Tidak diketahui").strip() or "Tidak diketahui") != selected_jabatan:
+                continue
+            if selected_tarif != "Semua Tarif" and rupiah(p[7]) != selected_tarif:
                 continue
 
             # =================================================
@@ -3632,6 +4107,73 @@ class App(tk.Tk):
             text=f"  Data {nama}  "
         )
 
+    def toggle_calendar_summary(self):
+        self._calendar_summary_expanded = not getattr(
+            self, "_calendar_summary_expanded", False
+        )
+        self.update_calendar_summary()
+
+    def toggle_calendar_legend(self):
+        if not hasattr(self, "calendar_legend_popup") or not self.calendar_legend_popup.winfo_exists():
+            popup = tk.Toplevel(self)
+            self.calendar_legend_popup = popup
+            popup.overrideredirect(True)
+            popup.configure(bg=UI_PANEL)
+            popup.attributes("-topmost", True)
+            frame = tk.Frame(
+                popup, bg=UI_PANEL, padx=12, pady=10,
+                highlightthickness=1, highlightbackground=UI_BORDER
+            )
+            frame.pack(fill="both", expand=True)
+            tk.Label(
+                frame, text="Keterangan warna kegiatan",
+                bg=UI_PANEL, fg=UI_TEXT, font=("Segoe UI", 10, "bold")
+            ).pack(anchor="w", pady=(0, 7))
+            for item in self.legend_kegiatan.winfo_children():
+                item.pack_configure(anchor="w", fill="x", pady=2)
+                clone = tk.Label(
+                    frame, text=item.cget("text"), bg=item.cget("bg"),
+                    fg=item.cget("fg"), padx=9, pady=5,
+                    font=("Segoe UI", 9, "bold"), anchor="w"
+                )
+                clone.pack(fill="x", pady=2)
+            x = self.calendar_legend_button.winfo_rootx()
+            y = self.calendar_legend_button.winfo_rooty() + self.calendar_legend_button.winfo_height() + 5
+            popup.geometry(f"+{x}+{y}")
+            popup.bind("<FocusOut>", lambda e: popup.destroy())
+            popup.focus_force()
+        else:
+            self.calendar_legend_popup.destroy()
+
+    def _show_calendar_cell_tooltip(self, widget, text):
+        self._hide_calendar_cell_tooltip()
+        tip = tk.Toplevel(self)
+        self._calendar_cell_tooltip = tip
+        tip.overrideredirect(True)
+        tip.attributes("-topmost", True)
+        frame = tk.Frame(
+            tip, bg=UI_PANEL, padx=10, pady=8,
+            highlightthickness=1, highlightbackground=UI_BORDER
+        )
+        frame.pack()
+        tk.Label(
+            frame, text=text, bg=UI_PANEL, fg=UI_TEXT,
+            justify="left", font=("Segoe UI", 9), wraplength=360
+        ).pack()
+        x = widget.winfo_rootx() + widget.winfo_width() + 8
+        y = widget.winfo_rooty() + 4
+        tip.geometry(f"+{x}+{y}")
+
+    def _hide_calendar_cell_tooltip(self):
+        tip = getattr(self, "_calendar_cell_tooltip", None)
+        if tip is not None:
+            try:
+                if tip.winfo_exists():
+                    tip.destroy()
+            except tk.TclError:
+                pass
+        self._calendar_cell_tooltip = None
+
     def update_calendar_summary(self):
         """Menampilkan rincian target TURUN dan realisasi bulanan."""
         if not hasattr(self, "calendar_summary"):
@@ -3670,50 +4212,71 @@ class App(tk.Tk):
                 if gol in target:
                     target_tarif.setdefault(gol, int(p[7] or 0))
 
-        lines = []
+        for item in self.calendar_summary.get_children():
+            self.calendar_summary.delete(item)
+
+        total_target_uang = 0
+        total_target_turun = 0
         if target:
-            lines.append("KOMPOSISI TARGET (JUMLAH TURUN):")
-            total_target_uang = 0
-            total_target_turun = 0
             for g, n in sorted(target.items()):
                 n = int(n)
                 tarif = int(target_tarif.get(g, 0))
                 subtotal = n * tarif
                 got, uang = actual.get(tarif, (0, 0))
-                sisa = max(0, n - got)
+                selisih = got - n
                 total_target_turun += n
                 total_target_uang += subtotal
 
-                if got < n:
-                    status = f"kurang {sisa} turun"
-                elif got > n:
-                    status = f"lebih {got-n} turun"
+                if selisih < 0:
+                    status = f"Kurang {abs(selisih)}"
+                elif selisih > 0:
+                    status = f"Lebih {selisih}"
                 else:
-                    status = "terpenuhi"
+                    status = "Terpenuhi"
 
-                lines.append(
-                    f"Gol {g}: {n} turun × {rupiah(tarif)} = {rupiah(subtotal)}"
-                    f"   |   Realisasi {got} turun   |   {status}"
+                self.calendar_summary.insert(
+                    "", "end",
+                    values=(
+                        f"Golongan {g}", f"{n} turun", rupiah(tarif),
+                        rupiah(subtotal), f"{got} turun",
+                        f"{selisih:+d}" if selisih else "0",
+                        status
+                    )
                 )
-
-            lines.append(
-                f"TOTAL TARGET: {total_target_turun} turun × rata-rata sesuai tarif"
-                f" = {rupiah(total_target_uang)}"
-            )
         else:
-            lines.append("Komposisi target belum ditentukan.")
+            self.calendar_summary.insert(
+                "", "end",
+                values=("Belum ditentukan", "—", "—", "—", "—", "—", "—")
+            )
 
-        lines.append(
-            f"TOTAL REALISASI: {sum(v[0] for v in actual.values())} turun"
-            f"  •  TOTAL UANG REALISASI: {rupiah(total_uang)}"
+        total_actual = sum(v[0] for v in actual.values())
+        self.calendar_summary_totals.config(
+            text=(
+                f"TOTAL TARGET  {total_target_turun} turun  •  {rupiah(total_target_uang)}"
+                f"        |        TOTAL REALISASI  {total_actual} turun"
+                f"  •  {rupiah(total_uang)}"
+            )
         )
 
         if desa_rows:
-            lines.append(
-                "DESA: " + "  •  ".join(f"Tgl {h}: {d}" for h,d in desa_rows)
+            village_text = "Lokasi penugasan:  " + "     •     ".join(
+                f"Tgl {h}: {d}" for h, d in desa_rows
             )
+        else:
+            village_text = "Lokasi penugasan: belum ada."
+        self.calendar_summary_villages.config(text=village_text)
 
-        self.calendar_summary.config(text="\n".join(lines))
+        total_target = sum(int(v) for v in target.values()) if target else 0
+        self.calendar_summary_status.config(
+            text=f"{total_actual}/{total_target} turun terealisasi" if target
+            else f"{total_actual} turun terealisasi"
+        )
+        if self._calendar_summary_expanded:
+            self.calendar_summary.pack(fill="x", pady=(7, 2))
+            self.calendar_summary_toggle.configure(text="▾  Ringkasan Komposisi & Realisasi")
+        else:
+            self.calendar_summary.pack_forget()
+            self.calendar_summary_toggle.configure(text="▸  Ringkasan Komposisi & Realisasi")
 
     def peringatan_komposisi_tanggal(self, hari):
         """Menghitung sisa target bulanan setelah tanggal yang sedang dipilih."""
@@ -3782,25 +4345,38 @@ class App(tk.Tk):
         ).fetchall() if self.bagian_id else []
         conn.close()
 
-        palette = ["#B8D4EF", "#C7E6C5", "#F3D6A5", "#D9C2E9", "#F4B8B8", "#BFE3E3", "#E7D6A8", "#C9D7B8"]
+        if getattr(self, "current_theme", "light") == "dark":
+            palette = [
+                "#285B78", "#28634F", "#76552B", "#594477",
+                "#743F4C", "#28666A", "#66552C", "#486044"
+            ]
+        else:
+            palette = [
+                "#D7EAFE", "#D9F2E4", "#FCECCB", "#E9DDF8",
+                "#F9DDE2", "#D7F0F0", "#F3E8C9", "#E2EED8"
+            ]
         self.calendar_colors = {r[0]: palette[i % len(palette)] for i, r in enumerate(kegiatan_rows)}
         jadwal_map = {
             (r[0], r[1]): {"kode": r[2], "nama": (r[3] or "").strip() or f"Kegiatan {r[2]}", "desa_id": r[5], "desa": r[6]}
             for r in jadwal_rows
         }
 
-        self.info_kalender.config(text=f"Pegawai kegiatan {self.bagian_aktif} • {NAMA_BULAN[bulan]} {tahun}")
-        self.info_libur.config(text=f"Libur manual: {', '.join(map(str, sorted(hari_libur))) if hari_libur else 'tidak ada'} • Minggu selalu libur")
+        self.info_libur.config(
+            text=f"Libur manual: {', '.join(map(str, sorted(hari_libur))) if hari_libur else 'tidak ada'}  ·  Minggu otomatis libur"
+        )
         for w in self.legend_kegiatan.winfo_children():
             w.destroy()
-        tk.Label(self.legend_kegiatan, text="Keterangan kegiatan:", bg=UI_BG, font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 8))
         for kode, nama, _ in kegiatan_rows:
             tk.Label(
                 self.legend_kegiatan,
-                text=f"{kode} = {(nama or '').strip() or f'Kegiatan {kode}'}",
-                bg=self.calendar_colors[kode], relief="solid", bd=1,
-                padx=8, pady=3, font=("Segoe UI", 9, "bold")
-            ).pack(side="left", padx=3)
+                text=f"{kode} · {(nama or '').strip() or f'Kegiatan {kode}'}",
+                bg=self.calendar_colors[kode],
+                fg="#172033" if getattr(self, "current_theme", "light") != "dark" else "#FFFFFF",
+                padx=9, pady=6, font=("Segoe UI", 9, "bold")
+            ).pack(anchor="w", fill="x", pady=2)
+        self.calendar_legend_button.configure(
+            command=self.toggle_calendar_legend
+        )
 
         # Header kiri tetap di tempat; header tanggal terpisah dari area scroll vertikal.
         ttk.Label(self.calendar_names_header_frame, text="No.", font=("Segoe UI", 9, "bold"), anchor="center").grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
@@ -3836,7 +4412,13 @@ class App(tk.Tk):
                     nonkerja = tanggal.weekday() == 6 or hari in hari_libur
                     detail = jadwal_map.get((pid, hari))
                     if nonkerja:
-                        cell = tk.Button(self.calendar_frame, text="LIBUR", width=6, state="disabled", disabledforeground="#888888", bg="#F1F3F5", relief="solid", bd=1, font=("Segoe UI", 8))
+                        cell = tk.Button(
+                            self.calendar_frame, text="LIBUR", width=6, state="disabled",
+                            disabledforeground=UI_MUTED,
+                            bg=UI_TABLE_HEAD, activebackground=UI_TABLE_HEAD,
+                            relief="solid", bd=1, font=("Segoe UI", 8),
+                            highlightthickness=0
+                        )
                     else:
                         kode = detail["kode"] if detail else ""
                         desa = detail["desa"] if detail else ""
@@ -3844,21 +4426,29 @@ class App(tk.Tk):
                         cell = tk.Button(
                             self.calendar_frame, text=(kode + (f"\n{desa[:10] + ('…' if len(desa) > 10 else '')}" if desa else "")),
                             width=6, height=2, wraplength=64,
-                            bg=self.calendar_colors.get(kode, "#FFFFFF") if detail else "#FFFFFF",
-                            relief="solid", bd=1,
+                            bg=self.calendar_colors.get(kode, UI_PANEL) if detail else UI_PANEL,
+                            fg="#F8FAFC" if getattr(self, "current_theme", "light") == "dark" and detail else UI_TEXT,
+                            activebackground=self.calendar_colors.get(kode, UI_TABLE_ALT) if detail else UI_TABLE_ALT,
+                            activeforeground="#FFFFFF" if getattr(self, "current_theme", "light") == "dark" and detail else UI_TEXT,
+                            relief="solid", bd=1, highlightthickness=0,
+                            highlightbackground=UI_BORDER,
                             font=("Segoe UI", 8, "bold") if kode else ("Segoe UI", 8),
                             command=(lambda pid=pid, h=hari, d=detail: self.popup_detail_penugasan(
                                 pid, h, self._bagian_id_from_kode(d["kode"]), parent=self
                             ) if d else self.toggle_jadwal(pid, h))
                         )
                     if detail:
-                        def show_cell_detail(event, n=nama, h=hari, d=detail):
+                        def show_cell_detail(event, n=nama, h=hari, d=detail, widget=cell):
                             warning = self.peringatan_komposisi_tanggal(h)
-                            text_detail = f"{n} • Tanggal {h} • {d['kode']} • Lokasi: {d['desa'] or 'Belum dipilih'}"
+                            detail_text = (
+                                f"{n}  ·  Tanggal {h}  ·  {d['kode']}\n"
+                                f"Lokasi: {d['desa'] or 'Belum dipilih'}"
+                            )
                             if warning:
-                                text_detail += f" • ⚠ {warning}"
-                            self.calendar_detail.config(text=text_detail)
+                                detail_text += f"\n⚠ {warning}"
+                            self._show_calendar_cell_tooltip(widget, detail_text)
                         cell.bind("<Enter>", show_cell_detail)
+                        cell.bind("<Leave>", lambda e: self._hide_calendar_cell_tooltip())
                     cell.grid(row=row, column=hari-1, sticky="nsew", padx=1, pady=1)
                 self.calendar_names_frame.grid_rowconfigure(row, minsize=47)
                 self.calendar_frame.grid_rowconfigure(row, minsize=47)
@@ -4196,7 +4786,7 @@ class App(tk.Tk):
         win.resizable(True, True)
         tk.Label(win, text=f"Detail Penugasan — {kode}", bg=UI_BG, fg=UI_TEXT,
                  font=("Segoe UI", 15, "bold")).pack(anchor="w", padx=22, pady=(18, 8))
-        body = tk.Frame(win, bg="white", padx=18, pady=14, highlightthickness=1, highlightbackground="#D7DEE8")
+        body = tk.Frame(win, bg=UI_PANEL, padx=18, pady=14, highlightthickness=1, highlightbackground="#D7DEE8")
         body.pack(fill="both", expand=True, padx=18, pady=4)
         fields = [
             ("Tanggal", f"{hari} {NAMA_BULAN[bulan]} {tahun}"),
@@ -4210,12 +4800,12 @@ class App(tk.Tk):
             ("Pegawai pada tanggal ini", anggota_text),
         ]
         for label, value in fields:
-            line = tk.Frame(body, bg="white")
+            line = tk.Frame(body, bg=UI_PANEL)
             line.pack(fill="x", anchor="w", pady=2)
-            tk.Label(line, text=f"{label}:", width=21, anchor="nw", bg="white", fg=UI_MUTED,
+            tk.Label(line, text=f"{label}:", width=21, anchor="nw", bg=UI_PANEL, fg=UI_MUTED,
                      font=("Segoe UI", 9, "bold")).pack(side="left")
             tk.Label(line, text=str(value), anchor="nw", justify="left", wraplength=460,
-                     bg="white", fg=UI_TEXT, font=("Segoe UI", 9)).pack(side="left", fill="x", expand=True)
+                     bg=UI_PANEL, fg=UI_TEXT, font=("Segoe UI", 9)).pack(side="left", fill="x", expand=True)
 
         bottom = tk.Frame(win, bg=UI_BG)
         bottom.pack(fill="x", padx=18, pady=(8, 16))
@@ -4265,17 +4855,17 @@ class App(tk.Tk):
             dialog.resizable(False, False)
             dialog.configure(bg=UI_BG)
 
-            card = tk.Frame(dialog, bg="white", padx=22, pady=18)
+            card = tk.Frame(dialog, bg=UI_PANEL, padx=22, pady=18)
             card.pack(fill="both", expand=True)
             tk.Label(
                 card, text="Buka kegiatan yang sesuai dulu",
-                bg="white", fg=UI_TEXT, font=("Segoe UI", 13, "bold"), anchor="w"
+                bg=UI_PANEL, fg=UI_TEXT, font=("Segoe UI", 13, "bold"), anchor="w"
             ).pack(fill="x", pady=(0, 8))
             tk.Label(
                 card,
                 text="Penugasan ini milik kegiatan lain. Pilih kegiatan tersebut terlebih dahulu "
                      "agar penugasan tidak terhapus dari tab yang salah.",
-                bg="white", fg=UI_MUTED, font=("Segoe UI", 10),
+                bg=UI_PANEL, fg=UI_MUTED, font=("Segoe UI", 10),
                 justify="left", wraplength=410, anchor="w"
             ).pack(fill="x", pady=(0, 14))
             target_box = tk.Frame(card, bg="#E5F4F1", padx=12, pady=10)
@@ -4289,7 +4879,7 @@ class App(tk.Tk):
                 bg="#E5F4F1", fg="#145B55", font=("Segoe UI", 12, "bold"),
                 anchor="w", wraplength=410, justify="left"
             ).pack(fill="x", pady=(3, 0))
-            actions = tk.Frame(card, bg="white")
+            actions = tk.Frame(card, bg=UI_PANEL)
             actions.pack(fill="x")
 
             def buka_kegiatan():
@@ -4422,11 +5012,18 @@ class App(tk.Tk):
         ).fetchall()
         conn.close()
 
-        palette = [
-            "#B8D4EF", "#C7E6C5", "#F3D6A5", "#D9C2E9",
-            "#F4B8B8", "#BFE3E3", "#E7D6A8", "#C9D7B8",
-            "#D5C4A1", "#C7D4F2", "#E5C1CD", "#CDE4C8"
-        ]
+        if getattr(self, "current_theme", "light") == "dark":
+            palette = [
+                "#285B78", "#28634F", "#76552B", "#594477",
+                "#743F4C", "#28666A", "#66552C", "#486044",
+                "#66513C", "#405A82", "#704454", "#45654C"
+            ]
+        else:
+            palette = [
+                "#D7EAFE", "#D9F2E4", "#FCECCB", "#E9DDF8",
+                "#F9DDE2", "#D7F0F0", "#F3E8C9", "#E2EED8",
+                "#EEE1D1", "#DDE7FA", "#F5DDE7", "#E2F0D9"
+            ]
         colors = {row[1]: palette[i % len(palette)] for i, row in enumerate(kegiatan_rows)}
         names = {row[1]: ((row[2] or '').strip() or f"Kegiatan {row[1]}") for row in kegiatan_rows}
         jadwal_map = {
@@ -4520,19 +5117,20 @@ class App(tk.Tk):
                 nonkerja = tanggal.weekday() == 6 or hari in hari_libur
                 detail = jadwal_map.get((pegawai_id, hari))
                 kode = detail["kode"] if detail else ""
-                warna = colors.get(kode, "#FFFFFF") if detail else "#FFFFFF"
+                warna = colors.get(kode, UI_PANEL) if detail else UI_PANEL
 
                 if nonkerja:
                     cell = tk.Label(
                         self.overall_calendar_frame, text="LIBUR", width=6, height=1,
-                        relief="solid", bd=1, bg="#F1F3F5", fg="#9CA3AF",
-                        font=("Segoe UI", 8)
+                        relief="solid", bd=1, bg=UI_TABLE_HEAD, fg=UI_MUTED,
+                        highlightthickness=0, font=("Segoe UI", 8)
                     )
                 else:
                     cell = tk.Label(
                         self.overall_calendar_frame, text=kode, width=6, height=1,
                         relief="solid", bd=1, bg=warna,
-                        font=("Segoe UI", 9, "bold") if kode else ("Segoe UI", 9)
+                        fg="#F8FAFC" if getattr(self, "current_theme", "light") == "dark" and kode else UI_TEXT,
+                        highlightthickness=0, font=("Segoe UI", 9, "bold") if kode else ("Segoe UI", 9)
                     )
 
                 if detail:
@@ -4583,129 +5181,168 @@ class App(tk.Tk):
             pass
 
     def atur_hari_libur(self):
-        """Dialog manual untuk menentukan tanggal merah pada bulan aktif."""
+        """Dialog kalender modern untuk memilih hari libur manual."""
         bulan = NAMA_BULAN.index(self.bulan_var.get())
         tahun = int(self.tahun_var.get())
         jumlah_hari = calendar.monthrange(tahun, bulan)[1]
         tersimpan = load_hari_libur(self.periode_id)
 
+        dark = getattr(self, "current_theme", "light") == "dark"
+        bg = "#0F172A" if dark else "#F3F6FB"
+        panel = "#182438" if dark else "#FFFFFF"
+        text = "#E7EEF8" if dark else "#17243A"
+        muted = "#9AAAC0" if dark else "#64748B"
+        border = "#33445D" if dark else "#DCE4EF"
+        accent = "#14B8A6" if dark else "#0F8B83"
+        selected_bg = "#155E59" if dark else "#D7F4EF"
+        sunday_bg = "#263449" if dark else "#EEF2F7"
+
         dialog = tk.Toplevel(self)
-        self.enable_native_window_controls(dialog)
-        dialog.title("Atur Hari Libur")
+        self.modernize_window(dialog, "Atur Hari Libur", (620, 520))
+        dialog.configure(bg=bg)
         dialog.transient(self)
-        dialog.grab_set()
-        dialog.resizable(True, True)
+        dialog.resizable(False, False)
         self.enable_native_window_controls(dialog)
         self.center_window(dialog, self)
 
+        shell = tk.Frame(dialog, bg=bg, padx=22, pady=18)
+        shell.pack(fill="both", expand=True)
+        heading = tk.Frame(shell, bg=bg)
+        heading.pack(fill="x", pady=(0, 14))
         tk.Label(
-            dialog,
-            text=f"Hari libur manual — {NAMA_BULAN[bulan]} {tahun}",
-            font=("Segoe UI", 12, "bold")
-        ).pack(anchor="w", padx=18, pady=(15, 3))
-
+            heading, text="Atur Hari Libur", bg=bg, fg=text,
+            font=("Segoe UI", 17, "bold")
+        ).pack(anchor="w")
         tk.Label(
-            dialog,
-            text="Centang tanggal yang tidak boleh diisi. Hari Minggu otomatis libur.",
-            fg=UI_MUTED
-        ).pack(anchor="w", padx=18, pady=(0, 10))
+            heading, text=f"{NAMA_BULAN[bulan]} {tahun}  ·  Pilih tanggal libur tambahan",
+            bg=bg, fg=muted, font=("Segoe UI", 9)
+        ).pack(anchor="w", pady=(3, 0))
 
-        grid = tk.Frame(dialog)
-        grid.pack(padx=18, pady=5)
+        card = tk.Frame(shell, bg=panel, padx=15, pady=14,
+                        highlightthickness=1, highlightbackground=border)
+        card.pack(fill="both", expand=True)
+        summary = tk.Label(card, text="", bg=panel, fg=accent,
+                           font=("Segoe UI", 9, "bold"))
+        summary.pack(anchor="w", pady=(0, 10))
 
-        vars_hari = {}
-        nama_hari = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
+        grid = tk.Frame(card, bg=panel)
+        grid.pack(fill="both", expand=True)
+        for col, nama in enumerate(["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]):
+            tk.Label(grid, text=nama, bg=panel, fg=muted,
+                     font=("Segoe UI", 9, "bold"), width=7).grid(
+                         row=0, column=col, padx=3, pady=(0, 7))
 
-        for col, nama in enumerate(nama_hari):
-            tk.Label(
-                grid, text=nama, width=9, font=("Segoe UI", 9, "bold")
-            ).grid(row=0, column=col, pady=(0, 5))
+        vars_hari, day_widgets = {}, {}
 
+        def update_day_style(hari):
+            var, widget = vars_hari[hari], day_widgets[hari]
+            weekday = datetime(tahun, bulan, hari).weekday()
+            if weekday == 6:
+                widget.configure(bg=sunday_bg, fg=muted, state="disabled",
+                                 activebackground=sunday_bg, activeforeground=muted)
+            elif var.get():
+                widget.configure(bg=selected_bg, fg=accent, activebackground=selected_bg,
+                                 activeforeground=accent, relief="solid",
+                                 highlightbackground=accent)
+            else:
+                widget.configure(bg=bg, fg=text, activebackground=selected_bg,
+                                 activeforeground=accent, relief="flat",
+                                 highlightbackground=border)
+
+        def update_summary():
+            count = sum(1 for h, v in vars_hari.items()
+                        if v.get() and datetime(tahun, bulan, h).weekday() != 6)
+            summary.configure(text=f"{count} tanggal dipilih  ·  Minggu otomatis libur")
+
+        offset = datetime(tahun, bulan, 1).weekday()
         for hari in range(1, jumlah_hari + 1):
             tanggal = datetime(tahun, bulan, hari)
-            weekday = tanggal.weekday()
-            row = 1 + (hari - 1) // 7
-            col = weekday
-
+            row = 1 + (offset + hari - 1) // 7
+            col = tanggal.weekday()
             var = tk.BooleanVar(value=hari in tersimpan)
             vars_hari[hari] = var
-
             cb = tk.Checkbutton(
-                grid,
-                text=str(hari),
-                variable=var,
-                width=6,
-                anchor="center"
+                grid, text=str(hari), variable=var, indicatoron=False,
+                width=5, height=2, font=("Segoe UI", 10, "bold"),
+                bd=0, relief="flat", highlightthickness=1,
+                command=lambda h=hari: (update_day_style(h), update_summary())
             )
-            cb.grid(row=row, column=col, padx=2, pady=2)
+            cb.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
+            day_widgets[hari] = cb
+            update_day_style(hari)
 
-            if weekday == 6:
-                cb.configure(
-                    state="disabled",
-                    text=f"{hari}*",
-                    disabledforeground="#888888"
-                )
+        for col in range(7):
+            grid.grid_columnconfigure(col, weight=1, uniform="day")
 
-        tk.Label(
-            dialog,
-            text="* Minggu selalu libur dan tidak perlu dicentang.",
-            fg="#6B7280",
-            font=("Segoe UI", 9, "italic")
-        ).pack(anchor="w", padx=18, pady=(4, 8))
+        tk.Label(shell,
+                 text="Minggu ditandai otomatis sebagai hari libur dan tidak dapat diubah.",
+                 bg=bg, fg=muted, font=("Segoe UI", 8)).pack(anchor="w", pady=(10, 12))
+        actions = tk.Frame(shell, bg=bg)
+        actions.pack(fill="x")
 
-        tombol = tk.Frame(dialog)
-        tombol.pack(fill="x", padx=18, pady=(4, 15))
+        def pilih_semua():
+            for h, var in vars_hari.items():
+                if datetime(tahun, bulan, h).weekday() != 6:
+                    var.set(True)
+                    update_day_style(h)
+            update_summary()
+
+        def kosongkan():
+            for h, var in vars_hari.items():
+                var.set(False)
+                update_day_style(h)
+            update_summary()
+
+        ttk.Button(actions, text="Pilih Semua", command=pilih_semua,
+                   style="Soft.TButton").pack(side="left")
+        ttk.Button(actions, text="Kosongkan", command=kosongkan,
+                   style="Soft.TButton").pack(side="left", padx=7)
 
         def simpan():
-            baru = {
-                hari for hari, var in vars_hari.items()
-                if var.get() and datetime(tahun, bulan, hari).weekday() != 6
-            }
-
+            baru = {h for h, var in vars_hari.items()
+                    if var.get() and datetime(tahun, bulan, h).weekday() != 6}
+            conn = None
             try:
                 simpan_hari_libur(self.periode_id, baru)
-
-                # Hapus jadwal yang jatuh pada Minggu atau libur manual
-                # supaya kalender tidak menyimpan penugasan pada hari nonkerja.
                 nonkerja = set(baru)
-                nonkerja.update(
-                    hari for hari in range(1, jumlah_hari + 1)
-                    if datetime(tahun, bulan, hari).weekday() == 6
-                )
-
+                nonkerja.update(h for h in range(1, jumlah_hari + 1)
+                                if datetime(tahun, bulan, h).weekday() == 6)
                 conn = get_connection()
                 for hari in sorted(nonkerja):
-                    conn.execute(
-                        "DELETE FROM jadwal WHERE periode_id = ? AND hari = ?",
-                        (self.periode_id, hari)
-                    )
+                    conn.execute("DELETE FROM jadwal WHERE periode_id = ? AND hari = ?",
+                                 (self.periode_id, hari))
                 conn.commit()
-                conn.close()
-            except Exception as e:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                messagebox.showerror("Gagal Menyimpan Hari Libur", "Hari libur tidak dapat disimpan. Silakan coba lagi.", parent=dialog)
+            except Exception:
+                if conn:
+                    conn.rollback()
+                messagebox.showerror("Gagal Menyimpan",
+                                     "Pengaturan hari libur tidak dapat disimpan. Silakan coba lagi.",
+                                     parent=dialog)
                 return
+            finally:
+                if conn:
+                    conn.close()
 
             dialog.destroy()
             self.load_kalender()
             self.refresh_data_pegawai()
-            messagebox.showinfo(
-                "Hari Libur",
-                "Pengaturan hari libur bulan ini berhasil disimpan.",
-                parent=self
-            )
+            if (getattr(self, "overall_calendar_window", None) is not None
+                    and self.overall_calendar_window.winfo_exists()):
+                self.load_kalender_keseluruhan()
+            messagebox.showinfo("Hari Libur",
+                                f"{len(baru)} tanggal libur tambahan berhasil disimpan.",
+                                parent=self)
 
-        ttk.Button(tombol, text="Batal", command=dialog.destroy).pack(side="right", padx=(8, 0))
-        ttk.Button(tombol, text="Simpan", command=simpan, style="Primary.TButton").pack(side="right")
-        self.fit_popup(
-            dialog, self,
-            min_width=620, min_height=420, max_width=760, max_height=700
-        )
+        ttk.Button(actions, text="Batal", command=dialog.destroy,
+                   style="Soft.TButton").pack(side="right", padx=(0, 8))
+        ttk.Button(actions, text="Simpan Perubahan", command=simpan,
+                   style="Primary.TButton").pack(side="right")
+        update_summary()
+        self.fit_popup(dialog, self, min_width=620, min_height=520,
+                       max_width=760, max_height=700)
+        dialog.grab_set()
+        dialog.focus_force()
 
-    # =====================================================
     # CELL KALENDER
     # =====================================================
 
@@ -4940,18 +5577,34 @@ class App(tk.Tk):
         container.pack(fill="both", expand=True)
         page_canvas = tk.Canvas(container, bg=UI_BG, highlightthickness=0)
         page_v = ttk.Scrollbar(container, orient="vertical", command=page_canvas.yview)
-        page_h = ttk.Scrollbar(container, orient="horizontal", command=page_canvas.xview)
-        page_canvas.configure(yscrollcommand=page_v.set, xscrollcommand=page_h.set)
+        page_canvas.configure(yscrollcommand=page_v.set)
         page_canvas.grid(row=0, column=0, sticky="nsew")
         page_v.grid(row=0, column=1, sticky="ns")
-        page_h.grid(row=1, column=0, sticky="ew")
         container.grid_rowconfigure(0, weight=1)
         container.grid_columnconfigure(0, weight=1)
         content = tk.Frame(page_canvas, bg=UI_BG)
         page_window = page_canvas.create_window((0, 0), window=content, anchor="nw")
         self.data_kegiatan_page_canvas = page_canvas
-        content.bind("<Configure>", lambda e: page_canvas.configure(scrollregion=page_canvas.bbox("all")))
-        page_canvas.bind("<Configure>", lambda e: page_canvas.itemconfigure(page_window, width=max(e.width, content.winfo_reqwidth())))
+
+        def _sync_data_page_scrollregion(event=None):
+            try:
+                content.update_idletasks()
+                page_canvas.configure(
+                    scrollregion=(0, 0, max(page_canvas.winfo_width(), 1),
+                                  max(content.winfo_reqheight(), page_canvas.winfo_height(), 1))
+                )
+            except tk.TclError:
+                pass
+
+        content.bind("<Configure>", _sync_data_page_scrollregion, add="+")
+        page_canvas.bind(
+            "<Configure>",
+            lambda e: (
+                page_canvas.itemconfigure(page_window, width=max(e.width, 1)),
+                _sync_data_page_scrollregion()
+            ),
+            add="+"
+        )
 
         tk.Label(
             content, text="DATA KEGIATAN",
@@ -4986,12 +5639,20 @@ class App(tk.Tk):
             self.table_data_kegiatan.column(c, width=widths[c], anchor="center")
         self.table_data_kegiatan.column("nama", anchor="w")
         self.table_data_kegiatan.column("jabatan", anchor="w")
-        self.table_data_kegiatan.pack(side="top", fill="both", expand=True)
-        scroll=ttk.Scrollbar(frame, orient="vertical", command=self.table_data_kegiatan.yview)
-        scroll.pack(side="right", fill="y")
-        scroll_x=ttk.Scrollbar(frame, orient="horizontal", command=self.table_data_kegiatan.xview)
-        scroll_x.pack(side="bottom", fill="x")
-        self.table_data_kegiatan.configure(yscrollcommand=scroll.set, xscrollcommand=scroll_x.set)
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        scroll = ttk.Scrollbar(
+            frame, orient="vertical", command=self.table_data_kegiatan.yview
+        )
+        scroll_x = ttk.Scrollbar(
+            frame, orient="horizontal", command=self.table_data_kegiatan.xview
+        )
+        self.table_data_kegiatan.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        scroll_x.grid(row=1, column=0, sticky="ew")
+        self.table_data_kegiatan.configure(
+            yscrollcommand=scroll.set, xscrollcommand=scroll_x.set
+        )
         self.modernize_tree(self.table_data_kegiatan)
 
         # Ringkasan desa yang dipakai pada kegiatan ini.
@@ -5224,23 +5885,105 @@ class App(tk.Tk):
         root.grid_columnconfigure(0, weight=1)
 
         header = tk.Frame(root, bg=UI_BG)
-        header.grid(row=0, column=0, sticky="ew", padx=20, pady=(12, 6))
-        tk.Label(header, text="KALENDER PENUGASAN KEGIATAN", bg=UI_BG,
-                 font=("Segoe UI Semibold", 15), fg=UI_TEXT).pack(anchor="w", pady=(0, 3))
-        self.info_kalender = tk.Label(header, text="", bg=UI_BG, fg=UI_MUTED)
-        self.info_kalender.pack(anchor="w")
-        kalender_tools = tk.Frame(header, bg=UI_BG)
-        kalender_tools.pack(fill="x", pady=(8, 0))
-        ttk.Button(kalender_tools, text="⚙ Atur Hari Libur", command=self.atur_hari_libur).pack(side="left")
-        self.info_libur = tk.Label(kalender_tools, text="", bg=UI_BG, fg=UI_MUTED)
-        self.info_libur.pack(side="left", padx=12)
+        header.grid(row=0, column=0, sticky="ew", padx=16, pady=(8, 5))
+
+        # Toolbar ringkas: informasi bulan sudah tersedia di bagian atas aplikasi.
+        kalender_tools = tk.Frame(
+            header, bg=UI_PANEL, padx=10, pady=7,
+            highlightthickness=1, highlightbackground=UI_BORDER
+        )
+        kalender_tools.pack(fill="x")
+        ttk.Button(
+            kalender_tools, text="▦  Atur Hari Libur",
+            command=self.atur_hari_libur, style="Soft.TButton"
+        ).pack(side="left")
+        self.info_libur = tk.Label(
+            kalender_tools, text="", bg=UI_PANEL, fg=UI_MUTED,
+            font=("Segoe UI", 9)
+        )
+        self.info_libur.pack(side="left", padx=(12, 0))
+
+        # Keterangan warna disembunyikan agar tidak memenuhi header.
         self.legend_kegiatan = tk.Frame(header, bg=UI_BG)
-        self.legend_kegiatan.pack(fill="x", pady=(6, 0))
-        self.calendar_detail = tk.Label(header, text="", bg=UI_BG, fg=UI_MUTED, anchor="w")
-        self.calendar_detail.pack(fill="x", pady=(4, 0))
-        self.calendar_summary = tk.Label(header, text="", bg=UI_BG, fg=UI_TEXT,
-                                         justify="left", anchor="w", font=("Segoe UI", 10, "bold"))
-        self.calendar_summary.pack(fill="x", pady=(4, 0))
+        self.calendar_legend_button = ttk.Button(
+            header, text="ⓘ  Keterangan kegiatan",
+            style="Soft.TButton"
+        )
+        self.calendar_legend_button.pack(anchor="w", pady=(5, 0))
+        self.calendar_detail = tk.Label(
+            header, text="", bg=UI_BG, fg=UI_MUTED, anchor="w",
+            font=("Segoe UI", 9)
+        )
+        # Detail dipindahkan ke tooltip pada sel kalender, bukan baris permanen.
+
+        # Ringkasan target dibuat sebagai panel ringkas yang bisa dibuka/tutup.
+        self.calendar_summary_card = tk.Frame(
+            header, bg=UI_PANEL, padx=10, pady=7,
+            highlightthickness=1, highlightbackground=UI_BORDER
+        )
+        self.calendar_summary_card.pack(fill="x", pady=(6, 0))
+        summary_head = tk.Frame(self.calendar_summary_card, bg=UI_PANEL)
+        summary_head.pack(fill="x")
+        self.calendar_summary_toggle = ttk.Button(
+            summary_head, text="▸  Ringkasan Komposisi & Realisasi",
+            style="Soft.TButton", command=self.toggle_calendar_summary
+        )
+        self.calendar_summary_toggle.pack(side="left")
+        self.calendar_summary_status = tk.Label(
+            summary_head, text="", bg=UI_PANEL, fg=UI_MUTED,
+            font=("Segoe UI", 9)
+        )
+        self.calendar_summary_status.pack(side="right")
+        # Ringkasan dibuat dalam tabel agar angka target dan realisasi sejajar.
+        summary_body = tk.Frame(self.calendar_summary_card, bg=UI_PANEL)
+        summary_body.pack(fill="x", pady=(7, 0))
+        summary_columns = ("golongan", "target", "tarif", "subtotal", "realisasi", "selisih", "status")
+        # Baris ringkasan diberi tinggi khusus agar teks tidak terpotong
+        # pada Windows dengan DPI/scaling 125% atau lebih tinggi.
+        summary_style = ttk.Style(self)
+        summary_style.configure(
+            "CalendarSummary.Treeview",
+            rowheight=42,
+            font=("Segoe UI", 10)
+        )
+        summary_style.configure(
+            "CalendarSummary.Treeview.Heading",
+            font=("Segoe UI", 9, "bold"),
+            padding=(8, 10)
+        )
+        self.calendar_summary = ttk.Treeview(
+            summary_body, columns=summary_columns, show="headings",
+            height=3, style="CalendarSummary.Treeview"
+        )
+        summary_headers = {
+            "golongan": "Golongan", "target": "Target Turun",
+            "tarif": "Tarif", "subtotal": "Total Target",
+            "realisasi": "Realisasi", "selisih": "Selisih", "status": "Status"
+        }
+        summary_widths = {
+            "golongan": 190, "target": 105, "tarif": 125,
+            "subtotal": 135, "realisasi": 105, "selisih": 105, "status": 115
+        }
+        for col in summary_columns:
+            self.calendar_summary.heading(col, text=summary_headers[col])
+            self.calendar_summary.column(
+                col, width=summary_widths[col], minwidth=75,
+                anchor="center", stretch=(col == "golongan")
+            )
+        self.calendar_summary.pack(fill="x", expand=True)
+
+        self.calendar_summary_totals = tk.Label(
+            summary_body, text="", bg=UI_PANEL, fg=UI_TEXT,
+            anchor="w", justify="left", font=("Segoe UI", 9, "bold")
+        )
+        self.calendar_summary_totals.pack(fill="x", pady=(6, 0))
+        self.calendar_summary_villages = tk.Label(
+            summary_body, text="", bg=UI_PANEL, fg=UI_MUTED,
+            anchor="w", justify="left", font=("Segoe UI", 9),
+            wraplength=1400
+        )
+        self.calendar_summary_villages.pack(fill="x", pady=(3, 0))
+        self._calendar_summary_expanded = False
 
         viewport = tk.Frame(root, bg=UI_PANEL, highlightbackground=UI_BORDER, highlightthickness=1)
         viewport.grid(row=1, column=0, sticky="nsew", padx=14, pady=(2, 12))
@@ -5249,29 +5992,29 @@ class App(tk.Tk):
 
         # Header pegawai dan header tanggal berada di baris terpisah dari badan tabel.
         # Dengan begitu header tidak ikut tergulung vertikal.
-        names_header = tk.Frame(viewport, bg="white", width=310, height=48)
+        names_header = tk.Frame(viewport, bg=UI_TABLE_HEAD, width=310, height=48)
         names_header.grid(row=0, column=0, sticky="nsew")
         names_header.grid_propagate(False)
         names_header.grid_columnconfigure(0, minsize=42, weight=0)
         names_header.grid_columnconfigure(1, minsize=245, weight=1)
 
-        date_header_canvas = tk.Canvas(viewport, bg="white", highlightthickness=0,
+        date_header_canvas = tk.Canvas(viewport, bg=UI_TABLE_HEAD, highlightthickness=0,
                                        height=48, xscrollincrement=20)
         date_header_canvas.grid(row=0, column=1, sticky="ew")
-        date_header_frame = tk.Frame(date_header_canvas, bg="white")
+        date_header_frame = tk.Frame(date_header_canvas, bg=UI_TABLE_HEAD)
         date_header_window = date_header_canvas.create_window((0, 0), window=date_header_frame, anchor="nw")
 
-        left_canvas = tk.Canvas(viewport, bg="white", highlightthickness=0, width=310, yscrollincrement=20)
+        left_canvas = tk.Canvas(viewport, bg=UI_PANEL, highlightthickness=0, width=310, yscrollincrement=20)
         left_canvas.grid(row=1, column=0, sticky="nsew")
-        left_frame = tk.Frame(left_canvas, bg="white")
+        left_frame = tk.Frame(left_canvas, bg=UI_PANEL)
         left_window = left_canvas.create_window((0, 0), window=left_frame, anchor="nw")
         left_frame.grid_columnconfigure(0, minsize=42, weight=0)
         left_frame.grid_columnconfigure(1, minsize=245, weight=1)
 
-        right_canvas = tk.Canvas(viewport, bg="white", highlightthickness=0,
+        right_canvas = tk.Canvas(viewport, bg=UI_PANEL, highlightthickness=0,
                                  xscrollincrement=20, yscrollincrement=20)
         right_canvas.grid(row=1, column=1, sticky="nsew")
-        right_frame = tk.Frame(right_canvas, bg="white")
+        right_frame = tk.Frame(right_canvas, bg=UI_PANEL)
         right_window = right_canvas.create_window((0, 0), window=right_frame, anchor="nw")
 
         vscroll = ttk.Scrollbar(viewport, orient="vertical",
@@ -5342,8 +6085,8 @@ class App(tk.Tk):
         root.pack(fill="both", expand=True)
         header = tk.Frame(root, bg=UI_BG)
         header.pack(fill="x", padx=20, pady=(18, 8))
-        tk.Label(header, text="KALENDER KESELURUHAN", bg=UI_BG,
-                 font=("Segoe UI Semibold", 15), fg=UI_TEXT).pack(anchor="w", pady=(0, 3))
+        tk.Label(header, text="Kalender Keseluruhan", bg=UI_BG,
+                 font=("Segoe UI", 18, "bold"), fg=UI_TEXT).pack(anchor="w", pady=(0, 3))
         self.overall_info_kalender = tk.Label(header, text="", bg=UI_BG, fg=UI_MUTED)
         self.overall_info_kalender.pack(anchor="w")
         tools = tk.Frame(header, bg=UI_BG)
@@ -5376,7 +6119,7 @@ class App(tk.Tk):
         viewport.grid_rowconfigure(1, weight=1)
         viewport.grid_columnconfigure(1, weight=1)
 
-        names_header = tk.Frame(viewport, bg="white", width=270, height=48)
+        names_header = tk.Frame(viewport, bg=UI_TABLE_HEAD, width=270, height=48)
         names_header.grid(row=0, column=0, sticky="nsew")
         names_header.grid_propagate(False)
         names_header.grid_columnconfigure(0, minsize=42, weight=0)
@@ -5386,21 +6129,21 @@ class App(tk.Tk):
         ttk.Label(names_header, text="Nama Pegawai", anchor="center", font=("Segoe UI", 9, "bold")).grid(
             row=0, column=1, sticky="nsew", padx=1, pady=1)
 
-        date_header_canvas = tk.Canvas(viewport, bg="white", highlightthickness=0, height=48, xscrollincrement=20)
+        date_header_canvas = tk.Canvas(viewport, bg=UI_TABLE_HEAD, highlightthickness=0, height=48, xscrollincrement=20)
         date_header_canvas.grid(row=0, column=1, sticky="ew")
-        date_header_frame = tk.Frame(date_header_canvas, bg="white")
+        date_header_frame = tk.Frame(date_header_canvas, bg=UI_TABLE_HEAD)
         date_header_window = date_header_canvas.create_window((0, 0), window=date_header_frame, anchor="nw")
 
-        names_canvas = tk.Canvas(viewport, bg="white", highlightthickness=0, width=270, yscrollincrement=20)
+        names_canvas = tk.Canvas(viewport, bg=UI_PANEL, highlightthickness=0, width=270, yscrollincrement=20)
         names_canvas.grid(row=1, column=0, sticky="nsew")
-        names_frame = tk.Frame(names_canvas, bg="white")
+        names_frame = tk.Frame(names_canvas, bg=UI_PANEL)
         names_window = names_canvas.create_window((0, 0), window=names_frame, anchor="nw")
         names_frame.grid_columnconfigure(0, minsize=42, weight=0)
         names_frame.grid_columnconfigure(1, minsize=220, weight=1)
 
-        dates_canvas = tk.Canvas(viewport, bg="white", highlightthickness=0, xscrollincrement=20, yscrollincrement=20)
+        dates_canvas = tk.Canvas(viewport, bg=UI_PANEL, highlightthickness=0, xscrollincrement=20, yscrollincrement=20)
         dates_canvas.grid(row=1, column=1, sticky="nsew")
-        dates_frame = tk.Frame(dates_canvas, bg="white")
+        dates_frame = tk.Frame(dates_canvas, bg=UI_PANEL)
         dates_window = dates_canvas.create_window((0, 0), window=dates_frame, anchor="nw")
 
         vscroll = tk.Scrollbar(viewport, orient="vertical",
@@ -5413,7 +6156,7 @@ class App(tk.Tk):
             dates_canvas.xview(*args)
         hscroll.configure(command=xscroll)
         date_header_canvas.configure(xscrollcommand=hscroll.set)
-        dates_canvas.configure(xscrollcommand=hscroll.set, yscrollcommand=vscroll.set)
+        dates_canvas.configure(xscrollcommand=hscroll.set)
         names_canvas.configure(yscrollcommand=vscroll.set)
 
         self.overall_names_header = names_header
@@ -5426,20 +6169,62 @@ class App(tk.Tk):
 
         def refresh_regions(event=None):
             try:
-                for f in (date_header_frame, names_frame, dates_frame):
-                    f.update_idletasks()
+                for frame in (date_header_frame, names_frame, dates_frame):
+                    frame.update_idletasks()
+
                 dw = max(date_header_frame.winfo_reqwidth(), date_header_canvas.winfo_width())
                 nw = max(names_frame.winfo_reqwidth(), names_canvas.winfo_width())
                 bw = max(dates_frame.winfo_reqwidth(), dates_canvas.winfo_width())
+
+                # Samakan tinggi setiap baris berdasarkan kebutuhan terbesar dari
+                # panel nama dan panel kalender. Dengan begitu, scrollbar tidak
+                # mencapai baris terakhir nama sementara kalender berhenti lebih awal.
+                row_count = max(
+                    len(names_frame.grid_slaves()),
+                    len(dates_frame.grid_slaves())
+                )
+                row_count = max(
+                    max((int(w.grid_info().get("row", 0)) for w in names_frame.grid_slaves()), default=-1),
+                    max((int(w.grid_info().get("row", 0)) for w in dates_frame.grid_slaves()), default=-1)
+                ) + 1
+
+                for row in range(row_count):
+                    try:
+                        name_h = names_frame.grid_bbox(0, row)[3]
+                    except Exception:
+                        name_h = 0
+                    try:
+                        date_h = dates_frame.grid_bbox(0, row)[3]
+                    except Exception:
+                        date_h = 0
+                    shared_row_h = max(name_h, date_h, 1)
+                    names_frame.grid_rowconfigure(row, minsize=shared_row_h)
+                    dates_frame.grid_rowconfigure(row, minsize=shared_row_h)
+
+                names_frame.update_idletasks()
+                dates_frame.update_idletasks()
+                shared_h = max(
+                    names_frame.winfo_reqheight(),
+                    dates_frame.winfo_reqheight(),
+                    1
+                )
+
                 date_header_canvas.itemconfigure(date_header_window, width=dw)
-                names_canvas.itemconfigure(names_window, width=nw)
-                dates_canvas.itemconfigure(dates_window, width=bw)
-                date_header_canvas.configure(scrollregion=(0, 0, dw, max(date_header_frame.winfo_reqheight(), 1)))
-                names_canvas.configure(scrollregion=(0, 0, nw, max(names_frame.winfo_reqheight(), 1)))
-                dates_canvas.configure(scrollregion=(0, 0, bw, max(dates_frame.winfo_reqheight(), 1)))
+                names_canvas.itemconfigure(names_window, width=nw, height=shared_h)
+                dates_canvas.itemconfigure(dates_window, width=bw, height=shared_h)
+
+                date_header_canvas.configure(
+                    scrollregion=(0, 0, dw, max(date_header_frame.winfo_reqheight(), 1))
+                )
+                names_canvas.configure(scrollregion=(0, 0, nw, shared_h))
+                dates_canvas.configure(scrollregion=(0, 0, bw, shared_h))
+
                 date_header_canvas.xview_moveto(dates_canvas.xview()[0])
+                # Posisi y disamakan setelah kedua scrollregion memiliki tinggi sama.
+                dates_canvas.yview_moveto(names_canvas.yview()[0])
             except tk.TclError:
                 pass
+
         for w in (date_header_frame, names_frame, dates_frame, date_header_canvas, names_canvas, dates_canvas):
             w.bind("<Configure>", refresh_regions, add="+")
         def wheel(event):
@@ -5470,11 +6255,6 @@ class App(tk.Tk):
                 self.overall_calendar_window.focus_force()
             except Exception:
                 pass
-            self._show_overall_loading_overlay(
-                self.overall_calendar_window,
-                "Memuat ulang Kalender Keseluruhan..."
-            )
-            self.after(120, self._finish_overall_calendar_loading)
             return
 
         win = tk.Toplevel(self)
@@ -5491,145 +6271,131 @@ class App(tk.Tk):
         win.protocol("WM_DELETE_WINDOW", lambda: self.tutup_kalender_keseluruhan(win))
         self.center_window(win, self)
 
-        # Loading dibuat sebagai overlay DI DALAM window kalender.
-        # Dengan cara ini indikator selalu berada di depan kalender, tidak
-        # terselip di belakang Toplevel, dan tetap terlihat pada DPI tinggi.
-        self.after(80, lambda w=win: self._build_overall_calendar_with_overlay(w))
+        # Jangan menutupi seluruh jendela dengan spinner saat render sinkron.
+        # Overlay lama ikut membeku karena render kalender berjalan di event loop
+        # utama. Tampilkan shell lebih dahulu, lalu render setelah Tk idle.
+        self.after_idle(lambda w=win: self._build_overall_calendar_without_overlay(w))
 
     def _show_overall_loading_overlay(self, win, text="Memuat Kalender Keseluruhan..."):
-        """Tampilkan loading overlay di dalam window kalender agar pasti terlihat di depan."""
+        """Indikator kecil non-blocking pada Kalender Keseluruhan."""
         try:
-            old = getattr(self, "_overall_loading_overlay", None)
-            if old is not None and old.winfo_exists():
-                old.destroy()
-        except Exception:
-            pass
+            self._hide_overall_loading_overlay()
+            if win is None or not win.winfo_exists():
+                return
+            chip = tk.Frame(
+                win, bg=UI_PANEL, padx=13, pady=8,
+                highlightthickness=1, highlightbackground=UI_BORDER, bd=0
+            )
+            chip.place(relx=1.0, x=-16, y=14, anchor="ne")
+            chip.lift()
+            spinner = tk.Canvas(
+                chip, width=18, height=18, bg=UI_PANEL,
+                highlightthickness=0, bd=0
+            )
+            spinner.pack(side="left", padx=(0, 8))
+            spinner.create_oval(4, 4, 14, 14, outline=UI_BORDER, width=2)
+            spinner.create_arc(
+                4, 4, 14, 14, start=25, extent=105, style="arc",
+                outline=UI_PRIMARY, width=2, tags=("arc",)
+            )
+            label = tk.Label(
+                chip, text=text, bg=UI_PANEL, fg=UI_TEXT,
+                font=("Segoe UI", 9, "bold")
+            )
+            label.pack(side="left")
+            self._overall_loading_overlay = chip
+            self._overall_loading_spinner = spinner
+            self._overall_loading_label = label
+            self._overall_loading_index = 0
 
-        overlay = tk.Frame(win, bg="#F8FAFC")
-        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
-        overlay.lift()
+            def animate():
+                try:
+                    if not chip.winfo_exists():
+                        return
+                    idx = self._overall_loading_index
+                    spinner.itemconfigure("arc", start=(25 + idx * 14) % 360)
+                    self._overall_loading_index = idx + 1
+                    self._overall_loading_job = self.after(55, animate)
+                except tk.TclError:
+                    self._overall_loading_job = None
 
-        card = tk.Frame(overlay, bg="white", padx=34, pady=26,
-                        highlightthickness=1, highlightbackground="#CBD5E1")
-        card.place(relx=0.5, rely=0.5, anchor="center")
-
-        tk.Label(
-            card, text="Memuat Kalender", bg="white", fg=UI_TEXT,
-            font=("Segoe UI", 13, "bold")
-        ).pack(pady=(0, 6))
-
-        label = tk.Label(
-            card, text=text, bg="white", fg=UI_MUTED,
-            font=("Segoe UI", 9)
-        )
-        label.pack(pady=(0, 12))
-
-        spinner = tk.Label(
-            card, text="◐", bg="white", fg="#0F766E",
-            font=("Segoe UI Symbol", 28, "bold")
-        )
-        spinner.pack(pady=(0, 10))
-
-        bar = ttk.Progressbar(card, mode="indeterminate", length=260)
-        bar.pack()
-        bar.start(10)
-
-        self._overall_loading_overlay = overlay
-        self._overall_loading_spinner = spinner
-        self._overall_loading_label = label
-        self._overall_loading_bar = bar
-        self._overall_loading_index = 0
-
-        def animate():
-            try:
-                if not overlay.winfo_exists():
-                    return
-                frames = ("◐", "◓", "◑", "◒")
-                idx = getattr(self, "_overall_loading_index", 0)
-                spinner.config(text=frames[idx % len(frames)])
-                self._overall_loading_index = idx + 1
-                self._overall_loading_job = self.after(90, animate)
-                overlay.lift()
-            except Exception:
-                self._overall_loading_job = None
-
-        self._overall_loading_job = self.after(90, animate)
-        try:
+            self._overall_loading_job = self.after(55, animate)
             win.update_idletasks()
-            win.update()
         except Exception:
-            pass
+            self._overall_loading_overlay = None
+            self._overall_loading_spinner = None
+            self._overall_loading_label = None
+            self._overall_loading_job = None
 
     def _hide_overall_loading_overlay(self):
-        try:
-            job = getattr(self, "_overall_loading_job", None)
-            if job is not None:
+        job = getattr(self, "_overall_loading_job", None)
+        if job is not None:
+            try:
                 self.after_cancel(job)
-        except Exception:
-            pass
+            except Exception:
+                pass
         self._overall_loading_job = None
-        try:
-            bar = getattr(self, "_overall_loading_bar", None)
+        for attr in ("_overall_loading_bar",):
+            bar = getattr(self, attr, None)
             if bar is not None:
-                bar.stop()
-        except Exception:
-            pass
-        try:
-            overlay = getattr(self, "_overall_loading_overlay", None)
-            if overlay is not None and overlay.winfo_exists():
-                overlay.destroy()
-        except Exception:
-            pass
+                try:
+                    bar.stop()
+                except Exception:
+                    pass
+        overlay = getattr(self, "_overall_loading_overlay", None)
+        if overlay is not None:
+            try:
+                if overlay.winfo_exists():
+                    overlay.destroy()
+            except Exception:
+                pass
         self._overall_loading_overlay = None
         self._overall_loading_spinner = None
         self._overall_loading_label = None
         self._overall_loading_bar = None
 
-    def _build_overall_calendar_with_overlay(self, win):
-        """Bangun shell kalender dahulu, lalu tampilkan overlay sebelum render data."""
+    def _build_overall_calendar_without_overlay(self, win):
+        """Render kalender tanpa overlay animasi yang membeku pada proses sinkron."""
         try:
             if not win.winfo_exists():
                 return
             self.build_kalender_keseluruhan(win)
             win.update_idletasks()
             self.center_window(win, self)
-            self._show_overall_loading_overlay(win, "Mengambil data penugasan...")
-            # Beri event loop kesempatan menggambar overlay dan menjalankan animasi
-            # sebelum rendering 48 pegawai x 31 tanggal dimulai.
-            self.after(140, lambda w=win: self._render_overall_calendar_after_overlay(w))
-        except Exception:
-            self._hide_overall_loading_overlay()
+            self.load_kalender_keseluruhan()
+            if win.winfo_exists():
+                win.lift()
+                win.focus_force()
+        except Exception as exc:
             messagebox.showerror(
                 "Kalender Keseluruhan",
-                "Kalender tidak dapat dimuat. Silakan coba lagi.",
+                f"Kalender tidak dapat dimuat.\\n\\nDetail: {exc}",
                 parent=win
             )
 
+    def _build_overall_calendar_with_overlay(self, win):
+        """Alias kompatibilitas; render kalender tanpa overlay layar penuh."""
+        self._build_overall_calendar_without_overlay(win)
+
     def _render_overall_calendar_after_overlay(self, win):
+        """Alias kompatibilitas; selalu bersihkan indikator setelah render."""
         try:
-            if not win.winfo_exists():
-                return
-            self.load_kalender_keseluruhan()
-            try:
-                win.lift()
-                win.focus_force()
-            except Exception:
-                pass
-        except Exception:
+            if win is not None and win.winfo_exists():
+                self.load_kalender_keseluruhan()
+        except Exception as exc:
             messagebox.showerror(
                 "Kalender Keseluruhan",
-                "Kalender tidak dapat dimuat. Silakan coba lagi.",
-                parent=win
+                f"Kalender tidak dapat dimuat.\\n\\nDetail: {exc}",
+                parent=win if win is not None and win.winfo_exists() else self
             )
         finally:
             self._hide_overall_loading_overlay()
 
     def _finish_overall_calendar_loading(self):
-        # Dipertahankan untuk kompatibilitas dengan caller lama.
+        """Kompatibilitas untuk caller lama; render dan bersihkan indikator."""
         win = getattr(self, "overall_calendar_window", None)
         if win is not None and win.winfo_exists():
-            self._show_overall_loading_overlay(win, "Memuat ulang Kalender Keseluruhan...")
-            self.after(120, lambda w=win: self._render_overall_calendar_after_overlay(w))
+            self._render_overall_calendar_after_overlay(win)
 
     def tutup_kalender_keseluruhan(self, win):
         try:
@@ -5808,7 +6574,7 @@ class App(tk.Tk):
         # =====================================================
         # TABLE
         # =====================================================
-        frame = tk.Frame(parent, bg="white")
+        frame = tk.Frame(parent, bg=UI_PANEL, highlightbackground=UI_BORDER, highlightthickness=1)
         frame.pack(fill="both", expand=True, padx=20, pady=15)
 
         columns = (
@@ -5993,7 +6759,7 @@ class App(tk.Tk):
             font=("Segoe UI", 9)
         ).pack(anchor="w", padx=25, pady=(0, 15))
 
-        form = tk.Frame(outer, bg="white", bd=1, relief="solid")
+        form = tk.Frame(outer, bg=UI_PANEL, bd=1, relief="solid")
         form.pack(fill="both", expand=True, padx=25, pady=(0, 15))
 
         values = {
@@ -6021,7 +6787,7 @@ class App(tk.Tk):
             tk.Label(
                 form,
                 text=label,
-                bg="white",
+                bg=UI_PANEL,
                 font=("Segoe UI", 10, "bold")
             ).grid(row=row, column=0, sticky="w", padx=18, pady=9)
 
@@ -6036,7 +6802,7 @@ class App(tk.Tk):
         tk.Label(
             form,
             text="Golongan Utama",
-            bg="white",
+            bg=UI_PANEL,
             fg=UI_MUTED,
             font=("Segoe UI", 9)
         ).grid(row=len(fields), column=0, sticky="w", padx=18, pady=(5, 14))
@@ -6045,7 +6811,7 @@ class App(tk.Tk):
         tk.Label(
             form,
             textvariable=gol_utama_var,
-            bg="white",
+            bg=UI_PANEL,
             fg=UI_TEXT,
             font=("Segoe UI", 10, "bold")
         ).grid(row=len(fields), column=1, sticky="w", padx=(0, 18), pady=(5, 14))
@@ -6766,9 +7532,9 @@ class App(tk.Tk):
             getattr(self, "tampilkan_nonaktif_var", tk.BooleanVar(value=False)).get()
         )
 
-        self.table_pegawai.tag_configure("baris1", background="#FFFFFF")
-        self.table_pegawai.tag_configure("baris2", background="#F1F4F7")
-        self.table_pegawai.tag_configure("nonaktif", foreground="#888888", background="#F4F4F4")
+        self.table_pegawai.tag_configure("baris1", background=THEME_PALETTES[getattr(self, "current_theme", "light")]["UI_PANEL"])
+        self.table_pegawai.tag_configure("baris2", background=THEME_PALETTES[getattr(self, "current_theme", "light")]["UI_TABLE_ALT"])
+        self.table_pegawai.tag_configure("nonaktif", foreground="#888888", background=THEME_PALETTES[getattr(self, "current_theme", "light")]["UI_TABLE_HEAD"])
 
         # Ambil semua pegawai agar checkbox "Tampilkan nonaktif" benar-benar
         # dapat menampilkan pegawai yang sudah dinonaktifkan.
@@ -7497,7 +8263,7 @@ class App(tk.Tk):
         ent.bind("<KeyRelease>", lambda event: self.refresh_data_desa())
         ttk.Button(search, text="✕", width=3, command=lambda: (self.search_data_desa_var.set(""), self.refresh_data_desa())).pack(side="left", padx=5)
 
-        frame = tk.Frame(win, bg="white")
+        frame = tk.Frame(win, bg=UI_PANEL)
         frame.pack(fill="both", expand=True, padx=20, pady=15)
         columns = ("no", "nama", "status", "turun", "tanggal", "kegiatan")
         self.table_desa = ttk.Treeview(frame, columns=columns, show="headings", selectmode="browse")
@@ -7914,7 +8680,7 @@ class App(tk.Tk):
             bg=UI_BG, fg=UI_MUTED, justify="left", font=("Segoe UI", 10)
         ).pack(anchor="w", padx=25, pady=(0, 15))
 
-        table_frame = tk.Frame(outer, bg="white")
+        table_frame = tk.Frame(outer, bg=UI_PANEL, highlightbackground=UI_BORDER, highlightthickness=1)
         table_frame.pack(fill="both", expand=True, padx=25, pady=5)
         self.kelola_data_tree = ttk.Treeview(
             table_frame, columns=("no", "periode_id", "periode", "kegiatan", "anggota", "jadwal"),
