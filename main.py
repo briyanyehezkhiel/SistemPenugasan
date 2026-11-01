@@ -35,19 +35,25 @@ from database import get_connection, create_database
 # =========================================================
 
 def configure_windows_dpi():
-    """Membuat aplikasi sadar DPI agar aman pada Windows 100%-200% scaling."""
+    """
+    Aktifkan DPI awareness agar Tkinter menggunakan koordinat fisik yang
+    konsisten. Skala internal Tk dikunci ke basis 125% setelah root dibuat.
+    """
     try:
         import ctypes
         user32 = ctypes.windll.user32
-        # Per-Monitor DPI Aware V2 (Windows 10+)
         try:
             user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
             return
         except Exception:
             pass
-        # Fallback untuk Windows yang lebih lama.
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            return
+        except Exception:
+            pass
+        try:
+            user32.SetProcessDPIAware()
         except Exception:
             pass
     except Exception:
@@ -57,7 +63,7 @@ def configure_windows_dpi():
 # =========================================================
 # KONFIGURASI
 # =========================================================
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/briyanyehezkhiel/SistemPenugasan/releases/latest"
 
 BAGIAN = []
@@ -813,6 +819,15 @@ class App(tk.Tk):
     def __init__(self):
 
         super().__init__()
+
+        # Kunci skala internal Tk pada basis 125% (120 DPI).
+        # Seluruh widget Tk menggunakan basis ukuran yang sama, tanpa
+        # mengubah implementasi kalender atau geometri tiap komponennya.
+        try:
+            self.tk.call("tk", "scaling", 120.0 / 72.0)
+        except Exception:
+            pass
+
         self.configure(bg=UI_BG)
 
         self.title(
