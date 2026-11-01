@@ -4,11 +4,11 @@ Aplikasi desktop untuk membantu pengelolaan penugasan pegawai berdasarkan kegiat
 
 ## 📥 Download
 
-Versi aplikasi yang siap digunakan dapat diunduh melalui:
+Versi aplikasi terbaru dapat diunduh melalui halaman berikut:
 
-**[Download Sistem Penugasan Pegawai Latest](../../releases/latest)**
+**[Download Sistem Penugasan Pegawai (Latest Release)](../../releases/latest)**
 
-Installer yang tersedia:
+Installer terbaru:
 
 `SistemPenugasan-Setup-v1.2.0.exe`
 
@@ -18,11 +18,11 @@ Installer yang tersedia:
 - 📊 Import data pegawai dari Excel
 - ✏️ Tambah, edit, nonaktifkan, aktifkan kembali, dan hapus permanen pegawai
 - 📋 Pengelolaan kegiatan
-- 👤 Penanggung Jawab (PJ)
-- 💰 Penentuan pegawai berdasarkan anggaran
-- ⚙️ Penentuan komposisi pegawai berdasarkan golongan
-- 📅 Kalender penugasan
-- 🚫 Pencegahan penugasan pada kegiatan berbeda di hari yang sama
+- 👤 Pengaturan Penanggung Jawab (PJ)
+- 💰 Penentuan pegawai berdasarkan anggaran kegiatan
+- ⚙️ Penentuan komposisi pegawai berdasarkan golongan dan tarif
+- 📅 Kalender penugasan bulanan
+- 🚫 Pencegahan penugasan pegawai pada kegiatan berbeda di tanggal yang sama
 - 📈 Rekap penugasan bulanan
 - 📤 Export data ke Excel
 
@@ -48,12 +48,18 @@ Installer yang tersedia:
 
 Data aplikasi disimpan secara lokal pada komputer pengguna.
 
-Database tidak disimpan di dalam folder instalasi aplikasi sehingga data pengguna dapat tetap dipertahankan ketika aplikasi diperbarui ke versi berikutnya.
+Database disimpan di luar folder instalasi aplikasi, yaitu pada direktori data aplikasi pengguna. Dengan demikian, data tetap dapat dipertahankan ketika aplikasi diperbarui ke versi berikutnya.
+
+## 🔄 Pembaruan Aplikasi
+
+Aplikasi dilengkapi dengan mekanisme pemeriksaan pembaruan yang mengambil informasi versi terbaru melalui `update.json` pada repositori GitHub.
+
+Jika pembaruan tersedia, pengguna dapat memperoleh informasi versi terbaru dan mengunduh installer melalui tautan rilis yang disediakan.
 
 ## 📌 Status
 
-**Version 1.1.1 - Latest Release**
+**Version 1.2.0 - Latest Release**
 
-Versi ini mencakup penyempurnaan tata letak dan scrolling kalender keseluruhan, serta pembaruan aplikasi.
+Versi 1.2.0 mencakup penyempurnaan pengelolaan penugasan, penentuan komposisi pegawai berdasarkan golongan dan anggaran, pengaturan PJ, validasi jadwal, serta peningkatan mekanisme pembaruan aplikasi.
 
-Lihat Release Notes untuk mengetahui riwayat versi dan perubahan pada setiap rilis.
+Lihat [Release Notes](../../releases) untuk mengetahui riwayat versi dan perubahan pada setiap rilis.
