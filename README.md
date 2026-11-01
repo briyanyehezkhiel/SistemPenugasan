@@ -10,7 +10,7 @@ Versi aplikasi yang siap digunakan dapat diunduh melalui:
 
 Installer yang tersedia:
 
-`SistemPenugasan-Setup-vx.x.x.exe`
+`SistemPenugasan-Setup-v1.2.0.exe`
 
 ## ✨ Fitur
 

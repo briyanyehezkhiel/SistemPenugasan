@@ -2,7 +2,7 @@
 ; Inno Setup script - Sistem Penugasan Pegawai
 
 #define MyAppName "Sistem Penugasan Pegawai"
-#define MyAppVersion "1.1.5"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "Briyan Yehezkhiel"
 #define MyAppURL "https://github.com/briyanyehezkhiel/SistemPenugasan"
 #define MyAppExeName "SistemPenugasan.exe"
