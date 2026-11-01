@@ -63,8 +63,8 @@ def configure_windows_dpi():
 # =========================================================
 # KONFIGURASI
 # =========================================================
-APP_VERSION = "1.1.4"
-GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/briyanyehezkhiel/SistemPenugasan/releases/latest"
+APP_VERSION = "1.1.5"
+UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/briyanyehezkhiel/SistemPenugasan/main/update.json"
 
 BAGIAN = []
 
@@ -878,62 +878,59 @@ class App(tk.Tk):
         self.after(1800, self.check_for_updates)
 
     def check_for_updates(self, manual=False):
-        """Periksa GitHub Releases di thread terpisah agar UI tidak macet."""
-        if manual:
-            self.update_check_button = getattr(self, "update_check_button", None)
-
+        """Periksa update melalui file manifest GitHub Raw, tanpa GitHub Releases API."""
         def worker():
             try:
                 request = urllib.request.Request(
-                    GITHUB_LATEST_RELEASE_API,
-                    headers={"User-Agent": "SistemPenugasanPegawai-Updater", "Accept": "application/vnd.github+json"}
+                    UPDATE_MANIFEST_URL,
+                    headers={"User-Agent": "SistemPenugasanPegawai-Updater",
+                             "Cache-Control": "no-cache"}
                 )
-                with urllib.request.urlopen(request, timeout=8) as response:
-                    release = json.loads(response.read().decode("utf-8"))
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    manifest = json.loads(response.read().decode("utf-8"))
 
-                latest = str(release.get("tag_name", "")).strip().lstrip("vV")
+                latest = str(manifest.get("version", "")).strip().lstrip("vV")
+                if not latest or not re.fullmatch(r"\\d+(?:\\.\\d+)*", latest):
+                    raise ValueError("Format versi pada update.json tidak valid.")
+
                 current_parts = self._version_parts(APP_VERSION)
                 latest_parts = self._version_parts(latest)
-                if not latest:
-                    if manual:
-                        self.after(0, lambda: messagebox.showwarning(
-                            "Pemeriksaan update", "GitHub tidak mengembalikan informasi versi yang valid.", parent=self))
-                    return
                 if latest_parts <= current_parts:
                     if manual:
                         self.after(0, lambda: messagebox.showinfo(
                             "Pemeriksaan update",
-                            f"Aplikasi sudah menggunakan versi terbaru.\n\nVersi saat ini: {APP_VERSION}\nVersi GitHub: {latest}",
+                            f"Aplikasi sudah menggunakan versi terbaru.\\n\\n"
+                            f"Versi saat ini: {APP_VERSION}\\nVersi terbaru: {latest}",
                             parent=self))
                     return
 
-                installer = next((asset for asset in release.get("assets", [])
-                                  if str(asset.get("name", "")).lower().endswith(".exe")
-                                  and "setup" in str(asset.get("name", "")).lower()), None)
-                if not installer or not installer.get("browser_download_url"):
-                    self.after(0, lambda: messagebox.showinfo(
-                        "Pembaruan tersedia",
-                        f"Versi {latest} tersedia, tetapi installer belum dilampirkan pada GitHub Release.\n\n"
-                        "Silakan buka halaman release untuk mengunduhnya.", parent=self))
-                    return
+                download_url = str(manifest.get("installer_url", "")).strip()
+                release_url = str(manifest.get(
+                    "release_url",
+                    "https://github.com/briyanyehezkhiel/SistemPenugasan/releases/latest"
+                )).strip()
 
-                release_url = release.get("html_url", "https://github.com/briyanyehezkhiel/SistemPenugasan/releases/latest")
-                self.after(0, lambda: self._offer_update(latest, installer["browser_download_url"], release_url))
+                # Batasi sumber installer ke HTTPS GitHub Releases.
+                from urllib.parse import urlparse
+                parsed = urlparse(download_url)
+                if parsed.scheme != "https" or parsed.netloc.lower() != "github.com" or "/releases/download/" not in parsed.path:
+                    raise ValueError("Tautan installer pada update.json tidak valid.")
+
+                self.after(0, lambda: self._offer_update(latest, download_url, release_url))
             except Exception as exc:
-                # Koneksi internet/API gagal tidak boleh menghalangi aplikasi digunakan.
                 if manual:
                     self.after(0, lambda err=str(exc): messagebox.showwarning(
                         "Pemeriksaan update gagal",
-                        "Tidak dapat memeriksa GitHub saat ini. Periksa koneksi internet lalu coba lagi.\n\n" + err,
+                        "Tidak dapat memeriksa informasi pembaruan. Periksa koneksi internet "
+                        "atau coba beberapa saat lagi.\\n\\n" + err,
                         parent=self))
-                return
 
         threading.Thread(target=worker, daemon=True).start()
 
     @staticmethod
     def _version_parts(version):
         try:
-            return tuple(int(part) for part in re.findall(r"\d+", version))
+            return tuple(int(part) for part in re.findall(r"\\d+", version))
         except Exception:
             return (0,)
 
@@ -942,8 +939,8 @@ class App(tk.Tk):
             return
         answer = messagebox.askyesno(
             "Pembaruan tersedia",
-            f"Versi yang digunakan: {APP_VERSION}\nVersi terbaru: {latest}\n\n"
-            "Unduh dan jalankan installer terbaru sekarang?\n"
+            f"Versi yang digunakan: {APP_VERSION}\\nVersi terbaru: {latest}\\n\\n"
+            "Unduh dan jalankan installer terbaru sekarang?\\n"
             "Simpan pekerjaan terlebih dahulu sebelum melanjutkan.",
             parent=self
         )
@@ -965,19 +962,24 @@ class App(tk.Tk):
         def worker():
             path = None
             try:
-                request = urllib.request.Request(download_url, headers={"User-Agent": "SistemPenugasanPegawai-Updater"})
-                with urllib.request.urlopen(request, timeout=30) as response:
+                request = urllib.request.Request(
+                    download_url,
+                    headers={"User-Agent": "SistemPenugasanPegawai-Updater"}
+                )
+                with urllib.request.urlopen(request, timeout=60) as response:
                     data = response.read()
-                if not data or len(data) < 100_000:
-                    raise ValueError("File installer yang diunduh tidak valid atau terlalu kecil.")
+                if not data or len(data) < 100_000 or not data.startswith(b"MZ"):
+                    raise ValueError("File installer yang diunduh tidak valid.")
                 fd, path = tempfile.mkstemp(prefix="SistemPenugasan-Setup-", suffix=".exe")
                 with os.fdopen(fd, "wb") as file:
                     file.write(data)
-                self.after(0, lambda: self._launch_update(path, progress))
+                self.after(0, lambda p=path: self._launch_update(p, progress))
             except Exception as exc:
                 if path and os.path.exists(path):
-                    try: os.remove(path)
-                    except OSError: pass
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
                 self.after(0, lambda err=str(exc): self._update_failed(err, progress, release_url))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -985,21 +987,22 @@ class App(tk.Tk):
     def _launch_update(self, installer_path, progress):
         try:
             progress.destroy()
-            # Jalankan installer biasa agar Windows dapat meminta izin/konfirmasi pengguna.
             subprocess.Popen([installer_path], close_fds=True)
             self.destroy()
         except Exception as exc:
             messagebox.showerror("Gagal menjalankan installer", str(exc), parent=self)
 
     def _update_failed(self, error, progress, release_url):
-        try: progress.destroy()
-        except Exception: pass
+        try:
+            progress.destroy()
+        except Exception:
+            pass
         messagebox.showerror(
             "Pembaruan gagal",
-            "Installer tidak berhasil diunduh. Periksa koneksi internet atau unduh manual dari GitHub Releases.\n\n" + error,
+            "Installer tidak berhasil diunduh. Periksa koneksi internet atau unduh manual "
+            "dari GitHub Releases.\\n\\n" + error,
             parent=self
         )
-        # Tautan tetap tersedia untuk dibuka manual bila diperlukan.
 
     def toggle_fullscreen(self, event=None):
         self._fullscreen = not getattr(self, "_fullscreen", False)
